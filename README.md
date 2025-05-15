@@ -4,6 +4,8 @@ Extracts YouTube video lists/links and automates adding them to NotebookLM.
 
 Build from source or go to extension: https://chromewebstore.google.com/detail/notebooklm-youtube-link-s/idkdddfdfhlgjleoieidjhmgmopacdli?authuser=0&hl=en
 
+Usage: https://youtu.be/cuHvZKJNU08?si=9eXdUKYJZ4utlDcz
+
 📘 NotebookLM - YouTube Link (Source) Automator
 
 Supercharge your research and note-taking workflow by seamlessly integrating YouTube videos into your Google NotebookLM notebooks! The NotebookLM - YouTube Link (Source) Automator extension automates the tedious process of adding multiple YouTube video sources, letting you focus on what matters.
