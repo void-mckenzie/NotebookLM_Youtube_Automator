@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "NotebookLM - Youtube Link (Source) Automator",
+  "version": "0.1",
+  "description": "Extracts YouTube video lists/links and automates adding them to NotebookLM.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/playlist*",
+    "*://*.youtube.com/watch*",
+    "*://notebooklm.google.com/*" 
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

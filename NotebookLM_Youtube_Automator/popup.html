@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Video List Manager</title>
+  <style>
+    /* Basic body styling for the popup */
+    body {
+      font-family: Arial, sans-serif;
+      width: 500px; /* Width of the popup */
+      min-height: 100px; /* Minimum height */
+      max-height: 550px; /* Maximum height, enables scrolling if content overflows */
+      overflow-y: auto; /* Add scrollbar if content is taller than max-height */
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    /* Popup title styling */
+    h3 {
+      text-align: center;
+      margin-top: 0;
+      margin-bottom: 10px;
+    }
+    /* Container for action buttons */
+    .button-container {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 10px; /* Reduced margin slightly */
+    }
+    .notebooklm-controls-container { /* NEW container for NotebookLM buttons */
+        display: flex;
+        flex-direction: column; /* Stack buttons vertically */
+        gap: 8px;
+        margin-bottom: 15px;
+    }
+
+    /* General button styling */
+    button {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9em;
+      width: 100%; /* Make buttons in flex containers take up available space */
+    }
+    /* Specific to top button container */
+    .button-container button {
+        flex-grow: 1; /* Allows buttons to share space */
+    }
+    .notebooklm-controls-container button { /* Ensure full width for these too */
+        width: 100%;
+    }
+
+    /* Styling for the main action button (Extract/Add) */
+    #actionButton {
+      background-color: #007bff;
+      color: white;
+    }
+    #actionButton:hover {
+      background-color: #0056b3;
+    }
+    #actionButton:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    /* Styling for the Reset All button */
+    #resetAllButton {
+      background-color: #dc3545;
+      color: white;
+    }
+    #resetAllButton:hover {
+      background-color: #c82333;
+    }
+    /* Styling for the NotebookLM add button */
+    #addToNotebookLMButton {
+      background-color: #28a745;
+      color: white;
+      /* margin-top: 10px; No longer needed due to container */
+      /* width: 100%; Already handled by general button style in container */
+    }
+    #addToNotebookLMButton:hover {
+      background-color: #218838;
+    }
+    #addToNotebookLMButton:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    /* NEW Styling for the Stop NotebookLM button */
+    #stopNotebookLMButton {
+      background-color: #ffc107; /* Amber/Yellow for warning/attention */
+      color: black;
+      /* display: none; Initially hidden, controlled by JS */
+    }
+    #stopNotebookLMButton:hover {
+      background-color: #e0a800;
+    }
+    #stopNotebookLMButton:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+
+    /* Styling for the status message area */
+    p#status, p#notebookLMStatus {
+      text-align: center;
+      font-size: 0.9em;
+      margin-bottom: 10px;
+      min-height: 1.2em;
+      color: #333;
+    }
+    p#notebookLMStatus.error {
+        color: #dc3545;
+        font-weight: bold;
+    }
+    p#notebookLMStatus.success {
+        color: #28a745;
+        font-weight: bold;
+    }
+
+    #resultsTableContainer {
+      margin-top: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9em;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 6px;
+      text-align: left;
+      word-wrap: break-word;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+    th.action-col, td.action-col {
+      width: 50px;
+      text-align: center;
+    }
+    td a {
+      color: #007bff;
+      text-decoration: none;
+    }
+    td a:hover {
+      text-decoration: underline;
+    }
+    .delete-btn {
+      background: none;
+      border: none;
+      color: #dc3545;
+      cursor: pointer;
+      font-size: 0.9em;
+      padding: 2px 4px;
+    }
+    .delete-btn:hover {
+      color: #c82333;
+    }
+  </style>
+</head>
+<body>
+  <h3>Video List Manager</h3>
+
+  <div class="button-container">
+    <button id="actionButton">Loading...</button>
+    <button id="resetAllButton">Reset All</button>
+  </div>
+
+  <p id="status">Loading stored data...</p>
+
+  <!-- NotebookLM Section -->
+  <div class="notebooklm-controls-container"> <!-- NEW Container -->
+    <button id="addToNotebookLMButton" disabled>Add All to NotebookLM</button>
+    <button id="stopNotebookLMButton" style="display: none;">Stop Adding to NotebookLM</button> <!-- NEW BUTTON -->
+  </div>
+  <p id="notebookLMStatus"></p>
+
+
+  <div id="resultsTableContainer">
+    <!-- Table will be dynamically inserted here -->
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
