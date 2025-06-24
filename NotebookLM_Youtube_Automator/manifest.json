@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NotebookLM - Youtube Link (Source) Automator",
-  "version": "0.1",
+  "version": "0.2",
   "description": "Extracts YouTube video lists/links and automates adding them to NotebookLM.",
   "permissions": [
     "activeTab",
