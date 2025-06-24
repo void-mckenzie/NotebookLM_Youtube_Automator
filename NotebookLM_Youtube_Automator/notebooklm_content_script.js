@@ -1,24 +1,18 @@
 // notebooklm_content_script.js
 
-console.log("NotebookLM Content Script Loaded");
+console.log("NotebookLM Content Script Loaded (v2 - Language Agnostic)");
 
 const NOTEBOOKLM_SELECTORS = {
-    addSourceButton: 'button[aria-label="Add source"]',
+    addSourceButton: 'button.add-source-button',
     youtubeLinkInput: 'input[formcontrolname="newUrl"]',
+    submitButton: 'button[type="submit"]',
 };
 
-let stopAutomationSignal = false; // Flag to signal stopping the process
-let currentResponseCallback = null; // To store sendResponse for ongoing communication
+let stopAutomationSignal = false;
+let currentResponseCallback = null;
 
-// --- Helper Functions (waitForElement, waitForElementToDisappear, findClickableElementByText, typeIntoInput, delay) ---
-// ... (Keep existing helper functions as they are) ...
-/**
- * Waits for an element to exist in the DOM and be visible.
- * @param {string} selector - The CSS selector for the element.
- * @param {Element} parent - The parent element to search within (defaults to document).
- * @param {number} timeout - Maximum time to wait in milliseconds.
- * @returns {Promise<Element>} Resolves with the element, or rejects on timeout.
- */
+// --- Helper Functions ---
+
 function waitForElement(selector, parent = document, timeout = 10000) {
     return new Promise((resolve, reject) => {
         const startTime = Date.now();
@@ -40,13 +34,6 @@ function waitForElement(selector, parent = document, timeout = 10000) {
     });
 }
 
-/**
- * Waits for an element to disappear from the DOM or become hidden.
- * @param {string} selector - The CSS selector for the element.
- * @param {Element} parent - The parent element to search within (defaults to document).
- * @param {number} timeout - Maximum time to wait in milliseconds.
- * @returns {Promise<void>} Resolves when the element is gone/hidden, or rejects on timeout.
- */
 function waitForElementToDisappear(selector, parent = document, timeout = 10000) {
     return new Promise((resolve, reject) => {
         const startTime = Date.now();
@@ -68,74 +55,50 @@ function waitForElementToDisappear(selector, parent = document, timeout = 10000)
     });
 }
 
-
 /**
- * Finds a clickable element (button, div[role="button"], mat-chip, specific spans) containing specific text.
- * This is more robust for dynamic UIs where IDs/classes might change.
- * @param {string[]} targetNodeNames - Array of node names like ['BUTTON', 'DIV', 'MAT-CHIP'].
- * @param {string} textToFind - The text content to search for.
- * @param {Element} searchContext - Element to search within (e.g., a modal). Defaults to document.
- * @returns {Promise<Element|null>} The found element or null.
+ * FINAL UPDATED HELPER: Finds the YouTube source type chip by looking for the unique icon
+ * and then finding its correct clickable parent, which is a <mat-chip>.
+ * @param {Element} searchContext - The element to search within (e.g., the dialog).
+ * @param {number} timeout - Maximum time to wait in milliseconds.
+ * @returns {Promise<Element>} Resolves with the clickable chip element.
  */
-async function findClickableElementByText(targetNodeNames, textToFind, searchContext = document, timeout = 5000) {
-    console.log(`Searching for clickable element with text: "${textToFind}" within`, searchContext);
-    const startTime = Date.now();
+function findYoutubeChip(searchContext, timeout = 5000) {
+    console.log("Searching for YouTube chip using its icon (v4 method)...");
     return new Promise((resolve, reject) => {
+        const startTime = Date.now();
         const interval = setInterval(() => {
             if (stopAutomationSignal) {
                 clearInterval(interval);
-                reject(new Error("Automation stopped by user during findClickableElementByText."));
+                reject(new Error("Automation stopped by user during findYoutubeChip."));
                 return;
             }
-            let foundElement = null;
-            const candidates = searchContext.querySelectorAll(targetNodeNames.join(', '));
 
-            for (const candidate of candidates) {
-                const textContent = (candidate.textContent || "").trim();
-                const ariaLabel = candidate.getAttribute('aria-label');
+            const icons = searchContext.querySelectorAll('mat-icon');
+            let youtubeChip = null;
 
-                if (candidate.offsetParent === null || candidate.closest('[hidden]') || getComputedStyle(candidate).display === 'none' || getComputedStyle(candidate).visibility === 'hidden') {
-                    continue;
-                }
-
-                if (textContent.includes(textToFind) || (ariaLabel && ariaLabel.includes(textToFind))) {
-                    if (targetNodeNames.includes(candidate.tagName.toLowerCase()) || candidate.matches('[role="button"], [mat-button], [mat-stroked-button], [mat-flat-button], [mat-icon-button], [mat-fab], [mat-mini-fab], .mdc-button, .mat-mdc-chip-action-label')) {
-                        foundElement = candidate;
-                        break;
-                    }
-                }
-            }
-            if (!foundElement) {
-                const chipLabels = searchContext.querySelectorAll('span.mdc-evolution-chip__text-label');
-                for (const chipLabel of chipLabels) {
-                    const innerSpan = chipLabel.querySelector('span');
-                    if (innerSpan && (innerSpan.textContent || "").trim() === textToFind && chipLabel.offsetParent !== null) {
-                        foundElement = chipLabel;
+            for (const icon of icons) {
+                if ((icon.textContent || "").trim() === 'video_youtube') {
+                    // CORRECTED: The clickable parent is a 'mat-chip' with a tabindex.
+                    const chip = icon.closest('mat-chip[tabindex="0"]');
+                    if (chip && chip.offsetParent !== null) {
+                        youtubeChip = chip;
                         break;
                     }
                 }
             }
 
-            if (foundElement) {
+            if (youtubeChip) {
                 clearInterval(interval);
-                console.log(`Found element for "${textToFind}":`, foundElement);
-                resolve(foundElement);
+                console.log("Found YouTube chip:", youtubeChip);
+                resolve(youtubeChip);
             } else if (Date.now() - startTime > timeout) {
                 clearInterval(interval);
-                console.warn(`Timeout or not found: Clickable element with text "${textToFind}"`);
-                reject(new Error(`Timeout or not found: Clickable element with text "${textToFind}" after ${timeout}ms.`));
+                reject(new Error(`Timeout: YouTube source type chip not found after ${timeout}ms.`));
             }
         }, 250);
     });
 }
 
-
-/**
- * Types text into an input field and dispatches an 'input' event
- * for frameworks like Angular to recognize the change.
- * @param {HTMLInputElement} inputElement - The input element.
- * @param {string} text - The text to type.
- */
 async function typeIntoInput(inputElement, text) {
     if (stopAutomationSignal) throw new Error("Automation stopped by user during typeIntoInput.");
     inputElement.focus();
@@ -145,22 +108,16 @@ async function typeIntoInput(inputElement, text) {
     await new Promise(resolve => setTimeout(resolve, 50));
 }
 
-/**
- * Introduces a delay.
- * @param {number} ms - Delay in milliseconds.
- */
 function delay(ms) {
     return new Promise((resolve, reject) => {
         const timeoutId = setTimeout(resolve, ms);
-        // Check for stop signal periodically during delay
         const intervalId = setInterval(() => {
             if (stopAutomationSignal) {
                 clearTimeout(timeoutId);
                 clearInterval(intervalId);
                 reject(new Error("Automation stopped by user during delay."));
             }
-        }, 100); // Check every 100ms
-        // Clear interval when delay completes normally
+        }, 100);
         setTimeout(() => clearInterval(intervalId), ms);
     });
 }
@@ -170,33 +127,31 @@ function delay(ms) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "ADD_VIDEOS_TO_NOTEBOOKLM") {
         console.log("Received videos to add:", message.videos);
-        stopAutomationSignal = false; // Reset stop signal for a new run
-        currentResponseCallback = sendResponse; // Store for ongoing updates
+        stopAutomationSignal = false;
+        currentResponseCallback = sendResponse;
 
         if (!message.videos || message.videos.length === 0) {
             currentResponseCallback({ status: "error", data: "No videos provided to add." });
-            return false; // No async response needed here
+            return false;
         }
 
         addVideosToNotebookLM(message.videos)
             .then(() => {
-                console.log("Finished processing all videos from content script.");
-                if (!stopAutomationSignal) { // Only send complete if not stopped
+                if (!stopAutomationSignal) {
                     currentResponseCallback({ status: "complete", data: "All videos processed." });
                 }
             })
             .catch(err => {
                 console.error("Error during batch video processing in content script:", err);
-                // If error is due to stopping, it's already handled or will be
                 if (!err.message.includes("Automation stopped by user")) {
                     try {
                         currentResponseCallback({ status: "error", data: `Content script error: ${err.message}` });
                     } catch (e) {
-                        console.warn("Could not send error response back to popup (already responded or channel closed):", e);
+                        console.warn("Could not send error response back to popup:", e);
                     }
                 }
             });
-        return true; // Indicates that currentResponseCallback will be used asynchronously.
+        return true;
     } else if (message.action === "STOP_NOTEBOOKLM_AUTOMATION") {
         console.log("Received STOP_NOTEBOOKLM_AUTOMATION signal.");
         stopAutomationSignal = true;
@@ -204,29 +159,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             try {
                 currentResponseCallback({ status: "stopped", data: "Automation stop signal received by content script." });
             } catch (e) {
-                // This might happen if the original ADD_VIDEOS_TO_NOTEBOOKLM response channel was already used up
-                // or closed. The main effect is setting the flag.
                 console.warn("Could not send 'stopped' confirmation via original callback:", e);
             }
-            currentResponseCallback = null; // Clear it as we've "responded" to the stop
+            currentResponseCallback = null;
         }
-        // Optionally, send a new message to popup if the above fails, but popup also updates UI optimistically.
         sendResponse({ status: "acknowledged_stop" });
         return false;
     }
-    return false; // For any other messages
+    return false;
 });
 
 async function addVideosToNotebookLM(videos) {
-    // Initial message to popup
     if (currentResponseCallback) {
         try {
             currentResponseCallback({ status: "progress", data: `Starting to add ${videos.length} videos...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-        } catch(e) { console.warn("Could not send initial progress, popup might have closed or callback used."); }
-    } else { // Fallback if initial callback is tricky
+        } catch(e) { console.warn("Could not send initial progress."); }
+    } else {
         chrome.runtime.sendMessage({ status: "progress", data: `Starting to add ${videos.length} videos...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
     }
-
 
     await delay(500);
 
@@ -234,7 +184,7 @@ async function addVideosToNotebookLM(videos) {
         if (stopAutomationSignal) {
             console.log("Automation stopping due to signal.");
             chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped by user.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-            return; // Exit the loop and function
+            return;
         }
 
         const video = videos[i];
@@ -242,19 +192,15 @@ async function addVideosToNotebookLM(videos) {
         console.log(progressMessage);
         chrome.runtime.sendMessage({ status: "progress", data: progressMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS", video_index_processing: i });
 
-
         try {
             // 1. Click the main "+ Add" source button
             const addSourceBtn = await waitForElement(NOTEBOOKLM_SELECTORS.addSourceButton, document, 7000);
             addSourceBtn.click();
             await delay(500);
 
-            // 2. In the modal, click the "YouTube" button/chip
+            // 2. In the modal, find and click the "YouTube" chip
             const dialogContainer = await waitForElement('mat-dialog-container', document, 5000);
-            const youtubeButtonInModal = await findClickableElementByText(
-                ['button', 'div[role="button"]', 'mat-chip', 'span.mdc-evolution-chip__text-label'],
-                'YouTube', dialogContainer, 5000
-            );
+            const youtubeButtonInModal = await findYoutubeChip(dialogContainer, 5000);
             youtubeButtonInModal.click();
             await delay(500);
 
@@ -266,21 +212,19 @@ async function addVideosToNotebookLM(videos) {
 
             // 4. Click the "Insert" button
             const activeDialogForInsert = document.querySelector('mat-dialog-container:not([hidden])') || dialogContainer;
-            const insertButton = await findClickableElementByText(
-                ['button', 'span'], 'Insert', activeDialogForInsert, 5000
-            );
+            const insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButton, activeDialogForInsert, 5000);
             insertButton.click();
 
-            // 5. Wait for insert process
-            await waitForElementToDisappear(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInsert, 15000); // Increased timeout for processing
+            // 5. Wait for insert process to complete
+            await waitForElementToDisappear(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInsert, 15000);
             console.log(`Video "${video.title}" likely added.`);
 
             chrome.runtime.sendMessage({
                 status: "video_success",
                 data: `Successfully added: "${video.title.substring(0, 30)}..."`,
                 type: "NOTEBOOKLM_AUTOMATION_STATUS",
-                video_index_added: i, // Send back the original index
-                video_link_added: video.link // And/or the link for more robust matching
+                video_index_added: i,
+                video_link_added: video.link
             });
             await delay(1500 + Math.random() * 500);
 
@@ -288,19 +232,15 @@ async function addVideosToNotebookLM(videos) {
             if (stopAutomationSignal || (error.message && error.message.includes("Automation stopped by user"))) {
                 console.log("Process caught stop signal during video addition.");
                 chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped during video processing.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-                return; // Exit
+                return;
             }
             const errorMessage = `Failed to add "${video.title}": ${error.message}. Stopping.`;
             console.error(errorMessage, error);
             chrome.runtime.sendMessage({ status: "error", data: errorMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-            return; // Stop on first error
+            return;
         }
     }
-    // If loop completes without being stopped
     if (!stopAutomationSignal) {
          console.log("All videos processed successfully (or attempted).");
-         // The 'complete' message is now sent by the .then() block of addVideosToNotebookLM caller
-         // if currentResponseCallback is used, or needs a dedicated send here if not.
-         // For consistency, let the caller's .then() handle the "complete" status.
     }
 }
