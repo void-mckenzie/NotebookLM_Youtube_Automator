@@ -1,4 +1,4 @@
-# NotebookLM_Youtube_Automator Chrome Extension
+# NotebookLM_Youtube_Automator Chrome Extension - Vibe Coding Diaries
 
 Extracts YouTube video lists/links and automates adding them to NotebookLM.
 
