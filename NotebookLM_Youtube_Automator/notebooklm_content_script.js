@@ -4,8 +4,14 @@ console.log("NotebookLM Content Script Loaded (v2 - Language Agnostic)");
 
 const NOTEBOOKLM_SELECTORS = {
     addSourceButton: 'button.add-source-button',
-    youtubeLinkInput: 'input[formcontrolname="newUrl"]',
-    submitButton: 'button[type="submit"]',
+    // Primary: new textarea with formcontrolname="urls"
+    youtubeLinkInput: 'textarea[formcontrolname="urls"]',
+    // Fallback: old input with formcontrolname="newUrl"
+    youtubeLinkInputFallback: 'input[formcontrolname="newUrl"]',
+    // Primary selector using visual attributes
+    submitButton: 'button[mat-flat-button][color="primary"]',
+    // Fallback using jslog tracking ID
+    submitButtonFallback: 'button[jslog="279307"]',
 };
 
 let stopAutomationSignal = false;
@@ -56,14 +62,14 @@ function waitForElementToDisappear(selector, parent = document, timeout = 10000)
 }
 
 /**
- * FINAL UPDATED HELPER: Finds the YouTube source type chip by looking for the unique icon
- * and then finding its correct clickable parent, which is a <mat-chip>.
+ * UPDATED HELPER: Finds the YouTube/Websites source button by looking for the unique
+ * youtube-icon class or the video_youtube icon text, then finding its clickable parent button.
  * @param {Element} searchContext - The element to search within (e.g., the dialog).
  * @param {number} timeout - Maximum time to wait in milliseconds.
- * @returns {Promise<Element>} Resolves with the clickable chip element.
+ * @returns {Promise<Element>} Resolves with the clickable button element.
  */
 function findYoutubeChip(searchContext, timeout = 5000) {
-    console.log("Searching for YouTube chip using its icon (v4 method)...");
+    console.log("Searching for YouTube/Websites button (v5 method - updated UI)...");
     return new Promise((resolve, reject) => {
         const startTime = Date.now();
         const interval = setInterval(() => {
@@ -73,27 +79,45 @@ function findYoutubeChip(searchContext, timeout = 5000) {
                 return;
             }
 
-            const icons = searchContext.querySelectorAll('mat-icon');
-            let youtubeChip = null;
+            let youtubeButton = null;
 
-            for (const icon of icons) {
-                if ((icon.textContent || "").trim() === 'video_youtube') {
-                    // CORRECTED: The clickable parent is a 'mat-chip' with a tabindex.
-                    const chip = icon.closest('mat-chip[tabindex="0"]');
-                    if (chip && chip.offsetParent !== null) {
-                        youtubeChip = chip;
-                        break;
+            // Method 1: Look for the mat-icon with the 'youtube-icon' class (new UI)
+            const youtubeIcon = searchContext.querySelector('mat-icon.youtube-icon');
+            if (youtubeIcon) {
+                const button = youtubeIcon.closest('button.drop-zone-icon-button');
+                if (button && button.offsetParent !== null) {
+                    youtubeButton = button;
+                }
+            }
+
+            // Method 2: Fallback to looking for video_youtube text content (old UI compatibility)
+            if (!youtubeButton) {
+                const icons = searchContext.querySelectorAll('mat-icon');
+                for (const icon of icons) {
+                    if ((icon.textContent || "").trim() === 'video_youtube') {
+                        // Try new UI button first
+                        let parent = icon.closest('button.drop-zone-icon-button');
+                        if (parent && parent.offsetParent !== null) {
+                            youtubeButton = parent;
+                            break;
+                        }
+                        // Fallback to old UI mat-chip
+                        parent = icon.closest('mat-chip[tabindex="0"]');
+                        if (parent && parent.offsetParent !== null) {
+                            youtubeButton = parent;
+                            break;
+                        }
                     }
                 }
             }
 
-            if (youtubeChip) {
+            if (youtubeButton) {
                 clearInterval(interval);
-                console.log("Found YouTube chip:", youtubeChip);
-                resolve(youtubeChip);
+                console.log("Found YouTube/Websites button:", youtubeButton);
+                resolve(youtubeButton);
             } else if (Date.now() - startTime > timeout) {
                 clearInterval(interval);
-                reject(new Error(`Timeout: YouTube source type chip not found after ${timeout}ms.`));
+                reject(new Error(`Timeout: YouTube/Websites source button not found after ${timeout}ms.`));
             }
         }, 250);
     });
@@ -173,7 +197,7 @@ async function addVideosToNotebookLM(videos) {
     if (currentResponseCallback) {
         try {
             currentResponseCallback({ status: "progress", data: `Starting to add ${videos.length} videos...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-        } catch(e) { console.warn("Could not send initial progress."); }
+        } catch (e) { console.warn("Could not send initial progress."); }
     } else {
         chrome.runtime.sendMessage({ status: "progress", data: `Starting to add ${videos.length} videos...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
     }
@@ -204,15 +228,27 @@ async function addVideosToNotebookLM(videos) {
             youtubeButtonInModal.click();
             await delay(500);
 
-            // 3. Find the YouTube link input field and paste the link
+            // 3. Find the URL input field and paste the link (try primary selector, then fallback)
             const activeDialogForInput = document.querySelector('mat-dialog-container:not([hidden])') || dialogContainer;
-            const youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInput, 5000);
+            let youtubeLinkInput;
+            try {
+                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInput, 3000);
+            } catch (e) {
+                console.log("Primary input selector failed, trying fallback...");
+                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInputFallback, activeDialogForInput, 3000);
+            }
             await typeIntoInput(youtubeLinkInput, video.link);
             await delay(200);
 
-            // 4. Click the "Insert" button
+            // 4. Click the "Insert" button (try primary selector, then fallback)
             const activeDialogForInsert = document.querySelector('mat-dialog-container:not([hidden])') || dialogContainer;
-            const insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButton, activeDialogForInsert, 5000);
+            let insertButton;
+            try {
+                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButton, activeDialogForInsert, 3000);
+            } catch (e) {
+                console.log("Primary Insert selector failed, trying fallback...");
+                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButtonFallback, activeDialogForInsert, 3000);
+            }
             insertButton.click();
 
             // 5. Wait for insert process to complete
@@ -241,6 +277,6 @@ async function addVideosToNotebookLM(videos) {
         }
     }
     if (!stopAutomationSignal) {
-         console.log("All videos processed successfully (or attempted).");
+        console.log("All videos processed successfully (or attempted).");
     }
 }
