@@ -38,7 +38,7 @@ document.addEventListener('DOMContentLoaded', async function() {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (activeTab && activeTab.url) {
         currentTabUrl = activeTab.url;
-        if (currentTabUrl.startsWith("https://notebooklm.google.com/")) {
+        if (currentTabUrl.startsWith("https://notebook.google.com/")) {
             onNotebookLMPage = true;
             onSpecificNotebookLMPage = currentTabUrl.includes("/notebook/");
             notebookLMTargetTabId = activeTab.id;
@@ -58,9 +58,12 @@ document.addEventListener('DOMContentLoaded', async function() {
     } else if (currentTabUrl && currentTabUrl.includes("youtube.com/watch")) {
       actionButton.textContent = "Add Current Video";
       actionButton.disabled = isNotebookLMAutomationRunning;
-    } else {
-      actionButton.textContent = "Open YouTube Video/Playlist";
+    } else if (onNotebookLMPage) {
+      actionButton.textContent = "On NotebookLM — switch tab to add";
       actionButton.disabled = true;
+    } else {
+      actionButton.textContent = "Add Current Tab";
+      actionButton.disabled = isNotebookLMAutomationRunning;
     }
 
     resetButton.style.display = currentPlaylistData.length > 0 ? 'inline-block' : 'none';
@@ -230,6 +233,44 @@ document.addEventListener('DOMContentLoaded', async function() {
                     }
                 });
             }
+        } else if (message.status === "video_success_batch") {
+            const addedLinks = Array.isArray(message.video_links_added) ? message.video_links_added : [];
+            videosProcessedInCurrentBatch += addedLinks.length;
+            const initialLength = currentPlaylistData.length;
+            currentPlaylistData = currentPlaylistData.filter(v => !addedLinks.includes(v.link));
+
+            if (currentPlaylistData.length < initialLength) {
+                await saveData();
+                await displayDataInPopup(currentPlaylistData);
+                console.log(`Batch: ${addedLinks.length} link(s) removed. Processed: ${videosProcessedInCurrentBatch}/${totalVideosInCurrentBatch}`);
+            }
+
+            statusMsg = `${message.data} (${videosProcessedInCurrentBatch} of ${totalVideosInCurrentBatch} done).`;
+            notebookLMStatusElement.textContent = statusMsg;
+
+            if (isNotebookLMAutomationRunning) {
+                await chrome.storage.local.set({
+                     notebookLMAutomationState: {
+                        isRunning: true, tabId: notebookLMTargetTabId,
+                        totalInBatch: totalVideosInCurrentBatch,
+                        processedInBatch: videosProcessedInCurrentBatch,
+                        lastMessage: statusMsg
+                    }
+                });
+            }
+
+            if (videosProcessedInCurrentBatch >= totalVideosInCurrentBatch || currentPlaylistData.length === 0) {
+                const finalMessage = currentPlaylistData.length === 0 ?
+                    `All ${totalVideosInCurrentBatch} sources added. List is now empty!` :
+                    `Complete: ${totalVideosInCurrentBatch} sources processed. ${currentPlaylistData.length} remain in list.`;
+
+                notebookLMStatusElement.textContent = finalMessage;
+                notebookLMStatusElement.classList.add('success');
+                isNotebookLMAutomationRunning = false;
+                totalVideosInCurrentBatch = 0;
+                videosProcessedInCurrentBatch = 0;
+                await chrome.storage.local.remove(['notebookLMAutomationState']);
+            }
         } else if (message.status === "video_success") {
             videosProcessedInCurrentBatch++;
             const videoLinkToRemove = message.video_link_added;
@@ -351,15 +392,30 @@ document.addEventListener('DOMContentLoaded', async function() {
     notebookLMStatusElement.textContent = "";
     try {
       const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (currentTab && currentTab.id && currentTab.url &&
-          (currentTab.url.includes("youtube.com/playlist") || currentTab.url.includes("youtube.com/watch"))) {
+      const url = currentTab && currentTab.url;
+      if (!url) {
+        statusElement.textContent = 'Could not read current tab URL.';
+        await refreshButtonStates();
+        return;
+      }
+      if (url.includes("youtube.com/playlist") || url.includes("youtube.com/watch")) {
         await chrome.scripting.executeScript({
           target: { tabId: currentTab.id },
           files: ['content.js']
         });
-      } else {
-        statusElement.textContent = 'Not a supported YouTube page for extraction.';
+      } else if (url.startsWith("https://notebook.google.com/")) {
+        statusElement.textContent = 'Switch to the page you want to add.';
         await refreshButtonStates();
+      } else {
+        const title = (currentTab.title && currentTab.title.trim()) || url;
+        if (!currentPlaylistData.some(v => v.link === url)) {
+          currentPlaylistData.push({ title, link: url });
+          statusElement.textContent = `Added "${title.substring(0, 30)}${title.length > 30 ? '...' : ''}". Total: ${currentPlaylistData.length}.`;
+          await saveData();
+        } else {
+          statusElement.textContent = `"${title.substring(0, 30)}..." is already in the list.`;
+        }
+        await displayDataInPopup(currentPlaylistData);
       }
     } catch (error) {
       console.error("Error in popup during script execution:", error);

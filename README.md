@@ -1,14 +1,14 @@
 # NotebookLM_Youtube_Automator Chrome Extension - Vibe Coding Diaries
 
-Extracts YouTube video lists/links and automates adding them to NotebookLM.
+Collects YouTube videos and any website links, then automates adding them to Google NotebookLM in batches.
 
 Build from source or go to extension: https://chromewebstore.google.com/detail/notebooklm-youtube-link-s/idkdddfdfhlgjleoieidjhmgmopacdli?authuser=0&hl=en
 
 Usage: https://youtu.be/cuHvZKJNU08?si=9eXdUKYJZ4utlDcz
 
-📘 NotebookLM - YouTube Link (Source) Automator
+📘 NotebookLM - Link (Source) Automator
 
-Supercharge your research and note-taking workflow by seamlessly integrating YouTube videos into your Google NotebookLM notebooks! The NotebookLM - YouTube Link (Source) Automator extension automates the tedious process of adding multiple YouTube video sources, letting you focus on what matters.
+Supercharge your research and note-taking workflow by seamlessly integrating YouTube videos and web articles into your Google NotebookLM notebooks! The NotebookLM - Link (Source) Automator extension automates the tedious process of adding multiple sources, letting you focus on what matters.
 
 ---
 
@@ -18,15 +18,18 @@ Supercharge your research and note-taking workflow by seamlessly integrating You
 - Instantly capture all video titles and links from any YouTube playlist.
 - Quickly add the current YouTube video you're watching.
 
-📋 Intuitive Video List Management
-- View your collected videos in a clear, organized table within the popup.
-- Delete individual videos from your list before adding to NotebookLM.
+🌐 Add Any Website
+- On any non-YouTube page, click "Add Current Tab" to add the page you're on — articles, blogs, docs, anything NotebookLM's Websites source accepts.
+
+📋 Intuitive List Management
+- View your collected sources in a clear, organized table within the popup.
+- Delete individual items from your list before adding to NotebookLM.
 
 ⚡ Powerful NotebookLM Automation
-- Batch Add: Add all videos from your list to your currently open NotebookLM notebook with a single click.
-- Real-time Progress: Monitor the automation with live status updates (e.g., "Adding video 3 of 10...").
-- Dynamic List Updates: Watch as successfully added videos are automatically removed from the table in the popup.
-- Full Control: Start, stop, and even resume (by restarting) the adding process. If you stop and restart, it continues with the remaining videos.
+- Batch Add: Submit up to 15 sources at a time in a single paste (NotebookLM's URL field accepts newline-separated links). Larger lists are split into batches automatically.
+- Real-time Progress: Monitor the automation with live status updates (e.g., "Adding batch 1 of 3: videos 1-15 of 40...").
+- Dynamic List Updates: Successfully added sources are automatically removed from the table.
+- Full Control: Start, stop, and even resume (by restarting) the adding process. If you stop and restart, it continues with the remaining items.
 
 🛠️ Robust & User-Friendly
 - Clear error messages if an issue occurs.
@@ -37,12 +40,13 @@ Supercharge your research and note-taking workflow by seamlessly integrating You
 
 🚀 HOW IT WORKS
 
-1. Navigate to a YouTube playlist or a specific video page.
-2. Open the extension and click "Extract Playlist" or "Add Current Video."
-3. Review and manage your video list in the popup.
-4. Open your desired Google NotebookLM notebook in another tab.
+1. Navigate to a YouTube playlist, a specific video page, or any web page you want to add.
+2. Open the extension and click "Extract Playlist", "Add Current Video", or "Add Current Tab" depending on the page.
+3. Review and manage your list in the popup.
+4. Open your desired Google NotebookLM notebook in another tab (notebook.google.com).
 5. In the extension popup, click "Add All to NotebookLM."
-6. Sit back and watch as your videos are automatically added as sources!
+6. Sit back and watch as your sources are automatically added in batches of up to 15!
+
 
 ---
 
@@ -51,6 +55,6 @@ Supercharge your research and note-taking workflow by seamlessly integrating You
 - Students
 - Researchers
 - Content Creators
-- Anyone who regularly uses YouTube videos as source material in Google NotebookLM
+- Anyone who regularly uses YouTube videos or web articles as source material in Google NotebookLM
 
 Stop wasting time with manual copy-pasting and streamline your knowledge management! ✨

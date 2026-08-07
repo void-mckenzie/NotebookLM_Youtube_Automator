@@ -194,41 +194,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function addVideosToNotebookLM(videos) {
+    const BATCH_SIZE = 15;
+
+    const totalBatches = Math.ceil(videos.length / BATCH_SIZE);
+
     if (currentResponseCallback) {
         try {
-            currentResponseCallback({ status: "progress", data: `Starting to add ${videos.length} videos...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+            currentResponseCallback({ status: "progress", data: `Starting to add ${videos.length} videos in ${totalBatches} batch(es) of up to ${BATCH_SIZE}...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
         } catch (e) { console.warn("Could not send initial progress."); }
     } else {
-        chrome.runtime.sendMessage({ status: "progress", data: `Starting to add ${videos.length} videos...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+        chrome.runtime.sendMessage({ status: "progress", data: `Starting to add ${videos.length} videos in ${totalBatches} batch(es) of up to ${BATCH_SIZE}...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
     }
 
     await delay(500);
 
-    for (let i = 0; i < videos.length; i++) {
+    for (let batchStart = 0; batchStart < videos.length; batchStart += BATCH_SIZE) {
         if (stopAutomationSignal) {
             console.log("Automation stopping due to signal.");
             chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped by user.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
             return;
         }
 
-        const video = videos[i];
-        const progressMessage = `Adding video ${i + 1} of ${videos.length}: "${video.title.substring(0, 30)}..."`;
+        const batch = videos.slice(batchStart, batchStart + BATCH_SIZE);
+        const batchNumber = Math.floor(batchStart / BATCH_SIZE) + 1;
+        const batchLinks = batch.map(v => v.link);
+        const progressMessage = `Adding batch ${batchNumber} of ${totalBatches}: videos ${batchStart + 1}-${batchStart + batch.length} of ${videos.length}...`;
         console.log(progressMessage);
-        chrome.runtime.sendMessage({ status: "progress", data: progressMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS", video_index_processing: i });
+        chrome.runtime.sendMessage({ status: "progress", data: progressMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
 
         try {
-            // 1. Click the main "+ Add" source button
+            // 1. Click the main "+ Add sources" button
             const addSourceBtn = await waitForElement(NOTEBOOKLM_SELECTORS.addSourceButton, document, 7000);
             addSourceBtn.click();
             await delay(500);
 
-            // 2. In the modal, find and click the "YouTube" chip
+            // 2. In the modal, find and click the "YouTube/Websites" chip
             const dialogContainer = await waitForElement('mat-dialog-container', document, 5000);
             const youtubeButtonInModal = await findYoutubeChip(dialogContainer, 5000);
             youtubeButtonInModal.click();
             await delay(500);
 
-            // 3. Find the URL input field and paste the link (try primary selector, then fallback)
+            // 3. Type all URLs in this batch, newline-separated (textarea accepts multiple)
             const activeDialogForInput = document.querySelector('mat-dialog-container:not([hidden])') || dialogContainer;
             let youtubeLinkInput;
             try {
@@ -237,8 +243,8 @@ async function addVideosToNotebookLM(videos) {
                 console.log("Primary input selector failed, trying fallback...");
                 youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInputFallback, activeDialogForInput, 3000);
             }
-            await typeIntoInput(youtubeLinkInput, video.link);
-            await delay(200);
+            await typeIntoInput(youtubeLinkInput, batchLinks.join("\n"));
+            await delay(300);
 
             // 4. Click the "Insert" button (try primary selector, then fallback)
             const activeDialogForInsert = document.querySelector('mat-dialog-container:not([hidden])') || dialogContainer;
@@ -251,32 +257,36 @@ async function addVideosToNotebookLM(videos) {
             }
             insertButton.click();
 
-            // 5. Wait for insert process to complete
-            await waitForElementToDisappear(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInsert, 15000);
-            console.log(`Video "${video.title}" likely added.`);
+            // 5. Wait for the textarea to disappear (Insert processed). Larger batches take longer.
+            await waitForElementToDisappear(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInsert, 60000);
+            console.log(`Batch ${batchNumber} of ${totalBatches} submitted (${batch.length} URLs).`);
 
             chrome.runtime.sendMessage({
-                status: "video_success",
-                data: `Successfully added: "${video.title.substring(0, 30)}..."`,
+                status: "video_success_batch",
+                data: `Batch ${batchNumber} of ${totalBatches} added (${batch.length} videos).`,
                 type: "NOTEBOOKLM_AUTOMATION_STATUS",
-                video_index_added: i,
-                video_link_added: video.link
+                video_links_added: batchLinks
             });
             await delay(1500 + Math.random() * 500);
 
         } catch (error) {
             if (stopAutomationSignal || (error.message && error.message.includes("Automation stopped by user"))) {
-                console.log("Process caught stop signal during video addition.");
-                chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped during video processing.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+                console.log("Process caught stop signal during batch submission.");
+                chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped during batch submission.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
                 return;
             }
-            const errorMessage = `Failed to add "${video.title}": ${error.message}. Stopping.`;
+            const errorMessage = `Failed to submit batch ${batchNumber} (${batch.length} URLs starting at index ${batchStart}): ${error.message}. Stopping. Failed links: ${batchLinks.join(", ")}`;
             console.error(errorMessage, error);
-            chrome.runtime.sendMessage({ status: "error", data: errorMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+            chrome.runtime.sendMessage({
+                status: "error",
+                data: `Batch ${batchNumber} failed: ${error.message}`,
+                type: "NOTEBOOKLM_AUTOMATION_STATUS",
+                failed_links: batchLinks
+            });
             return;
         }
     }
     if (!stopAutomationSignal) {
-        console.log("All videos processed successfully (or attempted).");
+        console.log("All batches processed successfully (or attempted).");
     }
 }
