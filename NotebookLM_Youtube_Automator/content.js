@@ -23,18 +23,62 @@ function runExtraction() {
 }
 
 /**
+ * Finds the playlist video entry elements on the page.
+ * YouTube's 2025+ redesign replaced ytd-playlist-video-renderer items with
+ * yt-lockup-view-model elements, so both layouts are supported here.
+ * @returns {{items: NodeList, layout: 'legacy'|'lockup'}} The video entries and which layout matched.
+ */
+function getPlaylistItems() {
+    let items = document.querySelectorAll('ytd-playlist-video-renderer');
+    if (items.length) return { items, layout: 'legacy' };
+
+    // New layout: each entry is a yt-lockup-view-model whose h3 holds the title anchor.
+    // Filtering on the h3 watch-link excludes any non-video lockups (e.g. promos).
+    items = document.querySelectorAll('yt-lockup-view-model');
+    if (items.length) return { items, layout: 'lockup' };
+
+    return { items: [], layout: 'unknown' };
+}
+
+/**
+ * Scrolls through the playlist to trigger YouTube's lazy loading so that all
+ * videos are present in the DOM before extraction. Stops once the item count
+ * stops growing (or the safety cap is hit).
+ */
+async function scrollPlaylistToLoadAll() {
+    const MAX_ROUNDS = 60;
+    const SCROLL_WAIT_MS = 700;
+    let lastCount = -1;
+    let stableRounds = 0;
+
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+        const { items } = getPlaylistItems();
+        const count = items.length;
+        if (count > 0 && count === lastCount) {
+            stableRounds++;
+            if (stableRounds >= 2) break; // No new items after two scrolls: everything is loaded
+        } else {
+            stableRounds = 0;
+        }
+        lastCount = count;
+        window.scrollTo(0, document.documentElement.scrollHeight);
+        await new Promise(resolve => setTimeout(resolve, SCROLL_WAIT_MS));
+    }
+    window.scrollTo(0, 0);
+}
+
+/**
  * Extracts video titles and links from a YouTube playlist page.
  * Sends the data as an array of objects to the popup.
  */
-function extractPlaylistDataAndSend() {
+async function extractPlaylistDataAndSend() {
     console.log("Content script: Starting playlist extraction...");
-    // IMPORTANT: This selector targets individual video entries in a playlist.
-    // YouTube's class names can change, breaking this selector.
-    // If extraction fails, this selector is the most likely culprit to check and update.
-    const videoElements = document.querySelectorAll('ytd-playlist-video-renderer');
+    await scrollPlaylistToLoadAll();
+
+    const { items: videoElements, layout } = getPlaylistItems();
 
     if (!videoElements.length) {
-        console.warn("Content script: No playlist video elements found with selector 'ytd-playlist-video-renderer'. Playlist might be empty or selector needs update.");
+        console.warn("Content script: No playlist video elements found with selectors 'ytd-playlist-video-renderer' or 'yt-lockup-view-model'. Playlist might be empty or selectors need update.");
         // Send an empty array if no videos found, popup can decide how to interpret
         chrome.runtime.sendMessage({ type: "PLAYLIST_DATA", data: [] }, handleResponse);
         return;
@@ -42,26 +86,35 @@ function extractPlaylistDataAndSend() {
 
     const playlistData = [];
     videoElements.forEach(videoEl => {
-        // Selectors for title and link within each video entry. Also prone to change.
-        const titleElement = videoEl.querySelector('#video-title');
-        const linkElement = videoEl.querySelector('a#video-title'); // Link is usually on the title's anchor tag
+        let title = "";
+        let link = "";
 
-        if (titleElement && linkElement) {
-            const title = titleElement.textContent.trim();
-            let link = linkElement.href;
-
-            // Optional: Clean up the link to remove playlist context if only the video ID is desired.
-            // link = link.split('&list=')[0].split('&index=')[0];
-
-            if (title && link) {
-                playlistData.push({ title, link });
+        if (layout === 'lockup') {
+            // New layout: the title anchor lives inside the entry's h3 heading.
+            // Class names inside yt-lockup-view-model churn often, so match by tags.
+            const linkElement = videoEl.querySelector('h3 a[href*="/watch?v="]');
+            if (linkElement) {
+                title = linkElement.textContent.trim();
+                link = linkElement.href;
             }
         } else {
-            console.warn("Content script: Could not find title or link for a playlist item. Selectors inside ytd-playlist-video-renderer might be outdated.", videoEl);
+            // Legacy layout selectors.
+            const titleElement = videoEl.querySelector('#video-title');
+            const linkElement = videoEl.querySelector('a#video-title'); // Link is usually on the title's anchor tag
+            if (titleElement && linkElement) {
+                title = titleElement.textContent.trim();
+                link = linkElement.href;
+            }
+        }
+
+        if (title && link) {
+            playlistData.push({ title, link });
+        } else {
+            console.warn("Content script: Could not find title or link for a playlist item. Selectors inside the video entry might be outdated.", videoEl);
         }
     });
 
-    console.log(`Content script: Extracted ${playlistData.length} videos from playlist. Sending to popup.`);
+    console.log(`Content script: Extracted ${playlistData.length} videos from playlist (${layout} layout). Sending to popup.`);
     chrome.runtime.sendMessage({ type: "PLAYLIST_DATA", data: playlistData }, handleResponse);
 }
 
