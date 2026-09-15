@@ -3,15 +3,19 @@
 console.log("NotebookLM Content Script Loaded (v2 - Language Agnostic)");
 
 const NOTEBOOKLM_SELECTORS = {
-    addSourceButton: 'button.add-source-button',
+    // 2026 Tailwind UI: the button lives at labs-tailwind-root > notebook > section >
+    // source-picker > nb-button > button. Structural selectors, language-agnostic.
+    addSourceButton: 'source-picker nb-button button',
+    // Old Angular UI class, kept as fallback.
+    addSourceButtonFallback: 'button.add-source-button',
     // Primary: new textarea with formcontrolname="urls"
     youtubeLinkInput: 'textarea[formcontrolname="urls"]',
     // Fallback: old input with formcontrolname="newUrl"
     youtubeLinkInputFallback: 'input[formcontrolname="newUrl"]',
     // Primary selector using visual attributes
     submitButton: 'button[mat-flat-button][color="primary"]',
-    // Fallback using jslog tracking ID
-    submitButtonFallback: 'button[jslog="279307"]',
+    // Fallback using jslog tracking ID (prefix match; jslog carries tracking suffixes)
+    submitButtonFallback: 'button[jslog^="279307"]',
 };
 
 let stopAutomationSignal = false;
@@ -123,6 +127,32 @@ function findYoutubeChip(searchContext, timeout = 5000) {
     });
 }
 
+/**
+ * Finds the "+ Add sources" button using structural selectors only (language-agnostic).
+ * Primary: source-picker nb-button button (2026 Tailwind UI).
+ * Fallbacks: the old .add-source-button class, and any visible button inside
+ * source-picker whose mat-icon ligature is "add" — ligature names are icon-font
+ * glyph names, identical in every UI language.
+ */
+async function findAddSourceButton(timeout = 7000) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+        if (stopAutomationSignal) throw new Error("Automation stopped by user.");
+        for (const selector of [NOTEBOOKLM_SELECTORS.addSourceButton, NOTEBOOKLM_SELECTORS.addSourceButtonFallback]) {
+            const btn = document.querySelector(selector);
+            if (btn && btn.offsetParent !== null) return btn;
+        }
+        const pickerButtons = document.querySelectorAll('source-picker button');
+        for (const btn of pickerButtons) {
+            if (btn.offsetParent === null) continue;
+            const icon = btn.querySelector('mat-icon');
+            if (icon && (icon.textContent || '').trim() === 'add') return btn;
+        }
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw new Error('Timeout: Add sources button not found (source-picker nb-button button).');
+}
+
 async function typeIntoInput(inputElement, text) {
     if (stopAutomationSignal) throw new Error("Automation stopped by user during typeIntoInput.");
     inputElement.focus();
@@ -223,42 +253,41 @@ async function addVideosToNotebookLM(videos) {
         chrome.runtime.sendMessage({ status: "progress", data: progressMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
 
         try {
-            // 1. Click the main "+ Add sources" button
-            const addSourceBtn = await waitForElement(NOTEBOOKLM_SELECTORS.addSourceButton, document, 7000);
+            // 1. Click the main "+ Add sources" button (structural selectors, language-agnostic)
+            const addSourceBtn = await findAddSourceButton();
             addSourceBtn.click();
             await delay(500);
 
-            // 2. In the modal, find and click the "YouTube/Websites" chip
-            const dialogContainer = await waitForElement('mat-dialog-container', document, 5000);
-            const youtubeButtonInModal = await findYoutubeChip(dialogContainer, 5000);
+            // 2. Find and click the "YouTube/Websites" chip. Searched on the whole
+            //    document because the 2026 Tailwind shell may not wrap the picker in
+            //    a mat-dialog-container; waitForElement skips hidden elements anyway.
+            const youtubeButtonInModal = await findYoutubeChip(document, 5000);
             youtubeButtonInModal.click();
             await delay(500);
 
             // 3. Type all URLs in this batch, newline-separated (textarea accepts multiple)
-            const activeDialogForInput = document.querySelector('mat-dialog-container:not([hidden])') || dialogContainer;
             let youtubeLinkInput;
             try {
-                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInput, 3000);
+                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInput, document, 3000);
             } catch (e) {
                 console.log("Primary input selector failed, trying fallback...");
-                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInputFallback, activeDialogForInput, 3000);
+                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInputFallback, document, 3000);
             }
             await typeIntoInput(youtubeLinkInput, batchLinks.join("\n"));
             await delay(300);
 
             // 4. Click the "Insert" button (try primary selector, then fallback)
-            const activeDialogForInsert = document.querySelector('mat-dialog-container:not([hidden])') || dialogContainer;
             let insertButton;
             try {
-                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButton, activeDialogForInsert, 3000);
+                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButton, document, 3000);
             } catch (e) {
                 console.log("Primary Insert selector failed, trying fallback...");
-                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButtonFallback, activeDialogForInsert, 3000);
+                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButtonFallback, document, 3000);
             }
             insertButton.click();
 
             // 5. Wait for the textarea to disappear (Insert processed). Larger batches take longer.
-            await waitForElementToDisappear(NOTEBOOKLM_SELECTORS.youtubeLinkInput, activeDialogForInsert, 60000);
+            await waitForElementToDisappear(NOTEBOOKLM_SELECTORS.youtubeLinkInput, document, 60000);
             console.log(`Batch ${batchNumber} of ${totalBatches} submitted (${batch.length} URLs).`);
 
             chrome.runtime.sendMessage({
