@@ -156,10 +156,16 @@ async function findAddSourceButton(timeout = 7000) {
     throw new Error('Timeout: Add sources button not found (source-picker nb-button button).');
 }
 
+// Strips HTML/script-like content so only plain text/URLs ever reach the DOM value,
+// guarding against injected markup if batchLinks ever contained attacker-controlled content.
+function sanitizeInputText(text) {
+    return String(text).replace(/<[^>]*>/g, "");
+}
+
 async function typeIntoInput(inputElement, text) {
     if (stopAutomationSignal) throw new Error("Automation stopped by user during typeIntoInput.");
     inputElement.focus();
-    inputElement.value = text;
+    inputElement.value = sanitizeInputText(text);
     inputElement.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
     inputElement.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
     await new Promise(resolve => setTimeout(resolve, 50));
