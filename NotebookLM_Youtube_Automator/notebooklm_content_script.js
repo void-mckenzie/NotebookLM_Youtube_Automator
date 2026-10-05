@@ -66,14 +66,25 @@ function waitForElementToDisappear(selector, parent = document, timeout = 10000)
 }
 
 /**
- * UPDATED HELPER: Finds the YouTube/Websites source button by looking for the unique
- * youtube-icon class or the video_youtube icon text, then finding its clickable parent button.
+ * UPDATED HELPER: Finds the YouTube/Websites source button structurally, never
+ * by label text (wording differs across UI versions and languages).
+ *
+ * The button is identified by its icon only:
+ * - a mat-icon carrying the `youtube-icon` class, or
+ * - any icon-font element whose ligature glyph is `video_youtube`
+ *   (a font glyph name — identical in every UI language).
+ *
+ * The clickable ancestor then differs per UI generation and is resolved with
+ * closest() up the real DOM path instead of matching one hardcoded class:
+ * - 2026 UI: plain <button.source-action-button> inside the add-source dialog
+ * - older UI: <button.drop-zone-icon-button> or <mat-chip[tabindex="0"]>
+ *
  * @param {Element} searchContext - The element to search within (e.g., the dialog).
  * @param {number} timeout - Maximum time to wait in milliseconds.
  * @returns {Promise<Element>} Resolves with the clickable button element.
  */
 function findYoutubeChip(searchContext, timeout = 5000) {
-    console.log("Searching for YouTube/Websites button (v5 method - updated UI)...");
+    console.log("Searching for YouTube/Websites button (v6 method - structural icon lookup)...");
     return new Promise((resolve, reject) => {
         const startTime = Date.now();
         const interval = setInterval(() => {
@@ -83,35 +94,27 @@ function findYoutubeChip(searchContext, timeout = 5000) {
                 return;
             }
 
+            // Icon candidates by class first, then by ligature glyph name across
+            // the icon element types this UI family has used. No text/label matching.
+            const iconCandidates = [
+                ...searchContext.querySelectorAll('.youtube-icon, [class*="youtube-icon"]'),
+                ...[...searchContext.querySelectorAll('mat-icon, labs-icon, yt-icon, span')]
+                    .filter(el => (el.textContent || "").trim() === 'video_youtube'),
+            ];
+
             let youtubeButton = null;
-
-            // Method 1: Look for the mat-icon with the 'youtube-icon' class (new UI)
-            const youtubeIcon = searchContext.querySelector('mat-icon.youtube-icon');
-            if (youtubeIcon) {
-                const button = youtubeIcon.closest('button.drop-zone-icon-button');
-                if (button && button.offsetParent !== null) {
-                    youtubeButton = button;
-                }
-            }
-
-            // Method 2: Fallback to looking for video_youtube text content (old UI compatibility)
-            if (!youtubeButton) {
-                const icons = searchContext.querySelectorAll('mat-icon');
-                for (const icon of icons) {
-                    if ((icon.textContent || "").trim() === 'video_youtube') {
-                        // Try new UI button first
-                        let parent = icon.closest('button.drop-zone-icon-button');
-                        if (parent && parent.offsetParent !== null) {
-                            youtubeButton = parent;
-                            break;
-                        }
-                        // Fallback to old UI mat-chip
-                        parent = icon.closest('mat-chip[tabindex="0"]');
-                        if (parent && parent.offsetParent !== null) {
-                            youtubeButton = parent;
-                            break;
-                        }
-                    }
+            for (const icon of iconCandidates) {
+                // Known source-action button classes first (2026 .source-action-button,
+                // older .drop-zone-icon-button), then any clickable button ancestor,
+                // then the old Angular chip. The prioritized match also prevents the
+                // youtube icons shown next to already-added sources in the notebook's
+                // source list from hijacking the lookup.
+                const clickable = icon.closest('button.source-action-button, button.drop-zone-icon-button')
+                    || icon.closest('button')
+                    || icon.closest('mat-chip[tabindex="0"]');
+                if (clickable && clickable.offsetParent !== null) {
+                    youtubeButton = clickable;
+                    break;
                 }
             }
 

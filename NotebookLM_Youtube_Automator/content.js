@@ -26,15 +26,38 @@ function runExtraction() {
  * Finds the playlist video entry elements on the page.
  * YouTube's 2025+ redesign replaced ytd-playlist-video-renderer items with
  * yt-lockup-view-model elements, so both layouts are supported here.
- * @returns {{items: NodeList, layout: 'legacy'|'lockup'}} The video entries and which layout matched.
+ *
+ * YouTube is a single-page app: pages visited earlier in the session (home feed,
+ * search results, watch pages) stay mounted in the DOM, hidden, inside
+ * ytd-page-manager — and their video cards are also yt-lockup-view-model
+ * elements. A document-wide query would mix those stale cards into the
+ * extraction after in-app navigation (a hard reload hides the symptom by
+ * discarding them), so queries are scoped to the playlist page's own container,
+ * with a hidden-ancestor filter as fallback if that container selector drifts.
+ *
+ * @returns {{items: NodeList|Element[], layout: 'legacy'|'lockup'}} The video entries and which layout matched.
  */
 function getPlaylistItems() {
-    let items = document.querySelectorAll('ytd-playlist-video-renderer');
+    const playlistPage = document.querySelector("ytd-browse[page-subtype='playlist']");
+
+    if (playlistPage) {
+        const legacyItems = playlistPage.querySelectorAll('ytd-playlist-video-renderer');
+        if (legacyItems.length) return { items: legacyItems, layout: 'legacy' };
+
+        // New layout: each entry is a yt-lockup-view-model whose h3 holds the title anchor.
+        // Filtering on the h3 watch-link excludes any non-video lockups (e.g. promos).
+        const lockupItems = playlistPage.querySelectorAll('yt-lockup-view-model');
+        if (lockupItems.length) return { items: lockupItems, layout: 'lockup' };
+    }
+
+    // Fallback if the container selector ever drifts: whole-document query, but
+    // ignore anything inside a hidden ancestor (stale SPA pages are hidden).
+    let items = [...document.querySelectorAll('ytd-playlist-video-renderer')]
+        .filter(el => !el.closest('[hidden]'));
     if (items.length) return { items, layout: 'legacy' };
 
-    // New layout: each entry is a yt-lockup-view-model whose h3 holds the title anchor.
-    // Filtering on the h3 watch-link excludes any non-video lockups (e.g. promos).
-    items = document.querySelectorAll('yt-lockup-view-model');
+    items = [...document.querySelectorAll('yt-lockup-view-model')]
+        .filter(el => !el.closest('[hidden]'));
     if (items.length) return { items, layout: 'lockup' };
 
     return { items: [], layout: 'unknown' };
@@ -68,6 +91,36 @@ async function scrollPlaylistToLoadAll() {
 }
 
 /**
+ * Returns the playlist ID of the current page (the `list` query param),
+ * or null when it cannot be determined.
+ */
+function getCurrentPlaylistId() {
+    return new URLSearchParams(window.location.search).get("list");
+}
+
+/**
+ * A watch link belongs to this playlist only when its `list` query param equals
+ * the one in the page URL. This is structural, never text-based: the comparison
+ * uses URL params, which are identical in every UI language.
+ *
+ * What it filters out:
+ * - Playlist pages append a "Recommended playlists" shelf once scrolled to the
+ *   end; its cards are yt-lockup-view-model elements whose watch links point at
+ *   OTHER playlists (list=<other id>).
+ * - Stale SPA pages kept mounted but hidden (home, search, watch) render watch
+ *   links with no list param at all, which would leak in if the container
+ *   scoping ever drifted.
+ *
+ * @param {string} link - absolute or relative watch URL
+ * @param {string|null} currentListId
+ */
+function linkBelongsToCurrentPlaylist(link, currentListId) {
+    if (!currentListId) return true; // no page-level ID: structural scoping is the only guard
+    const listParam = new URL(link, window.location.origin).searchParams.get("list");
+    return listParam === currentListId;
+}
+
+/**
  * Extracts video titles and links from a YouTube playlist page.
  * Sends the data as an array of objects to the popup.
  */
@@ -84,6 +137,7 @@ async function extractPlaylistDataAndSend() {
         return;
     }
 
+    const currentListId = getCurrentPlaylistId();
     const playlistData = [];
     videoElements.forEach(videoEl => {
         let title = "";
@@ -114,8 +168,20 @@ async function extractPlaylistDataAndSend() {
         }
     });
 
-    console.log(`Content script: Extracted ${playlistData.length} videos from playlist (${layout} layout). Sending to popup.`);
-    chrome.runtime.sendMessage({ type: "PLAYLIST_DATA", data: playlistData }, handleResponse);
+    console.log(`Content script: Raw extraction found ${playlistData.length} entries (${layout} layout).`);
+
+    // Strict pass: keep only entries whose link carries this playlist's own
+    // `list` param (drops the "Recommended playlists" shelf cards and stale
+    // SPA-page videos). If it filters everything out — e.g. YouTube changes its
+    // link format — degrade to the structural result instead of returning empty.
+    const ownPlaylistData = playlistData.filter(v => linkBelongsToCurrentPlaylist(v.link, currentListId));
+    const finalData = ownPlaylistData.length ? ownPlaylistData : playlistData;
+    if (!ownPlaylistData.length && playlistData.length) {
+        console.warn("Content script: Strict list-param filter matched nothing; falling back to unfiltered structural extraction.");
+    }
+
+    console.log(`Content script: Extracted ${finalData.length} videos from playlist (${layout} layout). Sending to popup.`);
+    chrome.runtime.sendMessage({ type: "PLAYLIST_DATA", data: finalData }, handleResponse);
 }
 
 /**

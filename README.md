@@ -2,7 +2,7 @@
 
 Collects YouTube videos and any website links, then automates adding them to Google NotebookLM in batches.
 
-Build from source or go to extension: https://chromewebstore.google.com/detail/notebooklm-youtube-link-s/idkdddfdfhlgjleoieidjhmgmopacdli?authuser=0&hl=en
+Build from source or go to extension: https://chromewebstore.google.com/detail/notebooklm-youtube-link-s/idkdddfdfhlgjleoieidjhmgmopacdli?authuser=0&hl=en / https://github.com/void-mckenzie/NotebookLM_Youtube_Automator
 
 Usage: https://youtu.be/cuHvZKJNU08?si=9eXdUKYJZ4utlDcz
 
