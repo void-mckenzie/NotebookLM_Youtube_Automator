@@ -1,324 +1,359 @@
 // notebooklm_content_script.js
 
-console.log("NotebookLM Content Script Loaded (v2 - Language Agnostic)");
-
-const NOTEBOOKLM_SELECTORS = {
-    // 2026 Tailwind UI: the button lives at labs-tailwind-root > notebook > section >
-    // source-picker > nb-button > button. Structural selectors, language-agnostic.
-    addSourceButton: 'source-picker nb-button button',
-    // Old Angular UI class, kept as fallback.
-    addSourceButtonFallback: 'button.add-source-button',
-    // Primary: new textarea with formcontrolname="urls"
-    youtubeLinkInput: 'textarea[formcontrolname="urls"]',
-    // Fallback: old input with formcontrolname="newUrl"
-    youtubeLinkInputFallback: 'input[formcontrolname="newUrl"]',
-    // Primary selector using visual attributes
-    submitButton: 'button[mat-flat-button][color="primary"]',
-    // Fallback using jslog tracking ID (prefix match; jslog carries tracking suffixes)
-    submitButtonFallback: 'button[jslog^="279307"]',
-};
-
-let stopAutomationSignal = false;
-let currentResponseCallback = null;
-
-// --- Helper Functions ---
-
-function waitForElement(selector, parent = document, timeout = 10000) {
-    return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-        const interval = setInterval(() => {
-            if (stopAutomationSignal) {
-                clearInterval(interval);
-                reject(new Error("Automation stopped by user during waitForElement."));
-                return;
-            }
-            const element = parent.querySelector(selector);
-            if (element && element.offsetParent !== null) {
-                clearInterval(interval);
-                resolve(element);
-            } else if (Date.now() - startTime > timeout) {
-                clearInterval(interval);
-                reject(new Error(`Timeout: Element "${selector}" not found or not visible after ${timeout}ms.`));
-            }
-        }, 100);
-    });
-}
-
-function waitForElementToDisappear(selector, parent = document, timeout = 10000) {
-    return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-        const interval = setInterval(() => {
-            if (stopAutomationSignal) {
-                clearInterval(interval);
-                reject(new Error("Automation stopped by user during waitForElementToDisappear."));
-                return;
-            }
-            const element = parent.querySelector(selector);
-            if (!element || element.offsetParent === null) {
-                clearInterval(interval);
-                resolve();
-            } else if (Date.now() - startTime > timeout) {
-                clearInterval(interval);
-                reject(new Error(`Timeout: Element "${selector}" still present after ${timeout}ms.`));
-            }
-        }, 100);
-    });
-}
-
 /**
- * UPDATED HELPER: Finds the YouTube/Websites source button structurally, never
- * by label text (wording differs across UI versions and languages).
- *
- * The button is identified by its icon only:
- * - a mat-icon carrying the `youtube-icon` class, or
- * - any icon-font element whose ligature glyph is `video_youtube`
- *   (a font glyph name — identical in every UI language).
- *
- * The clickable ancestor then differs per UI generation and is resolved with
- * closest() up the real DOM path instead of matching one hardcoded class:
- * - 2026 UI: plain <button.source-action-button> inside the add-source dialog
- * - older UI: <button.drop-zone-icon-button> or <mat-chip[tabindex="0"]>
- *
- * @param {Element} searchContext - The element to search within (e.g., the dialog).
- * @param {number} timeout - Maximum time to wait in milliseconds.
- * @returns {Promise<Element>} Resolves with the clickable button element.
+ * This file is re-injected by chrome.scripting.executeScript on EVERY
+ * "Add All to NotebookLM" click. Injections share the isolated world's global
+ * scope, so a second top-level `const`/`let` would throw a SyntaxError
+ * ("already declared") and abort the run — the flag + IIFE below prevent
+ * both that and duplicate onMessage listeners (which would double-run the
+ * automation).
  */
-function findYoutubeChip(searchContext, timeout = 5000) {
-    console.log("Searching for YouTube/Websites button (v6 method - structural icon lookup)...");
-    return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-        const interval = setInterval(() => {
-            if (stopAutomationSignal) {
-                clearInterval(interval);
-                reject(new Error("Automation stopped by user during findYoutubeChip."));
-                return;
-            }
+if (window.__notebooklmAutomatorInjected) {
+    console.log("NotebookLM Content Script already injected; reusing existing listener.");
+} else {
+    window.__notebooklmAutomatorInjected = true;
 
-            // Icon candidates by class first, then by ligature glyph name across
-            // the icon element types this UI family has used. No text/label matching.
-            const iconCandidates = [
-                ...searchContext.querySelectorAll('.youtube-icon, [class*="youtube-icon"]'),
-                ...[...searchContext.querySelectorAll('mat-icon, labs-icon, yt-icon, span')]
-                    .filter(el => (el.textContent || "").trim() === 'video_youtube'),
-            ];
+    (function () {
+        console.log("NotebookLM Content Script Loaded (v2 - Language Agnostic)");
 
-            let youtubeButton = null;
-            for (const icon of iconCandidates) {
-                // Known source-action button classes first (2026 .source-action-button,
-                // older .drop-zone-icon-button), then any clickable button ancestor,
-                // then the old Angular chip. The prioritized match also prevents the
-                // youtube icons shown next to already-added sources in the notebook's
-                // source list from hijacking the lookup.
-                const clickable = icon.closest('button.source-action-button, button.drop-zone-icon-button')
-                    || icon.closest('button')
-                    || icon.closest('mat-chip[tabindex="0"]');
-                if (clickable && clickable.offsetParent !== null) {
-                    youtubeButton = clickable;
-                    break;
-                }
-            }
+        const NOTEBOOKLM_SELECTORS = {
+            // 2026 Tailwind UI: the button lives at labs-tailwind-root > notebook > section >
+            // source-picker > nb-button > button. Structural selectors, language-agnostic.
+            addSourceButton: 'source-picker nb-button button',
+            // Old Angular UI class, kept as fallback.
+            addSourceButtonFallback: 'button.add-source-button',
+            // Primary: new textarea with formcontrolname="urls"
+            youtubeLinkInput: 'textarea[formcontrolname="urls"]',
+            // Fallback: old input with formcontrolname="newUrl"
+            youtubeLinkInputFallback: 'input[formcontrolname="newUrl"]',
+            // Primary selector using visual attributes
+            submitButton: 'button[mat-flat-button][color="primary"]',
+            // Fallback using jslog tracking ID (prefix match; jslog carries tracking suffixes)
+            submitButtonFallback: 'button[jslog^="279307"]',
+        };
 
-            if (youtubeButton) {
-                clearInterval(interval);
-                console.log("Found YouTube/Websites button:", youtubeButton);
-                resolve(youtubeButton);
-            } else if (Date.now() - startTime > timeout) {
-                clearInterval(interval);
-                reject(new Error(`Timeout: YouTube/Websites source button not found after ${timeout}ms.`));
-            }
-        }, 250);
-    });
-}
+        let stopAutomationSignal = false;
+        let currentResponseCallback = null;
 
-/**
- * Finds the "+ Add sources" button using structural selectors only (language-agnostic).
- * Primary: source-picker nb-button button (2026 Tailwind UI).
- * Fallbacks: the old .add-source-button class, and any visible button inside
- * source-picker whose mat-icon ligature is "add" — ligature names are icon-font
- * glyph names, identical in every UI language.
- */
-async function findAddSourceButton(timeout = 7000) {
-    const startTime = Date.now();
-    while (Date.now() - startTime < timeout) {
-        if (stopAutomationSignal) throw new Error("Automation stopped by user.");
-        for (const selector of [NOTEBOOKLM_SELECTORS.addSourceButton, NOTEBOOKLM_SELECTORS.addSourceButtonFallback]) {
-            const btn = document.querySelector(selector);
-            if (btn && btn.offsetParent !== null) return btn;
-        }
-        const pickerButtons = document.querySelectorAll('source-picker button');
-        for (const btn of pickerButtons) {
-            if (btn.offsetParent === null) continue;
-            const icon = btn.querySelector('mat-icon');
-            if (icon && (icon.textContent || '').trim() === 'add') return btn;
-        }
-        await new Promise(resolve => setTimeout(resolve, 250));
-    }
-    throw new Error('Timeout: Add sources button not found (source-picker nb-button button).');
-}
+        // --- Helper Functions ---
 
-async function typeIntoInput(inputElement, text) {
-    if (stopAutomationSignal) throw new Error("Automation stopped by user during typeIntoInput.");
-    inputElement.focus();
-    inputElement.value = text;
-    inputElement.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-    inputElement.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-    await new Promise(resolve => setTimeout(resolve, 50));
-}
-
-function delay(ms) {
-    return new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(resolve, ms);
-        const intervalId = setInterval(() => {
-            if (stopAutomationSignal) {
-                clearTimeout(timeoutId);
-                clearInterval(intervalId);
-                reject(new Error("Automation stopped by user during delay."));
-            }
-        }, 100);
-        setTimeout(() => clearInterval(intervalId), ms);
-    });
-}
-
-// --- Main Logic ---
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === "ADD_VIDEOS_TO_NOTEBOOKLM") {
-        console.log("Received videos to add:", message.videos);
-        stopAutomationSignal = false;
-        currentResponseCallback = sendResponse;
-
-        if (!message.videos || message.videos.length === 0) {
-            currentResponseCallback({ status: "error", data: "No videos provided to add." });
-            return false;
-        }
-
-        addVideosToNotebookLM(message.videos)
-            .then(() => {
-                if (!stopAutomationSignal) {
-                    currentResponseCallback({ status: "complete", data: "All videos processed." });
-                }
-            })
-            .catch(err => {
-                console.error("Error during batch video processing in content script:", err);
-                if (!err.message.includes("Automation stopped by user")) {
-                    try {
-                        currentResponseCallback({ status: "error", data: `Content script error: ${err.message}` });
-                    } catch (e) {
-                        console.warn("Could not send error response back to popup:", e);
+        function waitForElement(selector, parent = document, timeout = 10000) {
+            return new Promise((resolve, reject) => {
+                const startTime = Date.now();
+                const interval = setInterval(() => {
+                    if (stopAutomationSignal) {
+                        clearInterval(interval);
+                        reject(new Error("Automation stopped by user during waitForElement."));
+                        return;
                     }
+                    const element = parent.querySelector(selector);
+                    if (element && element.offsetParent !== null) {
+                        clearInterval(interval);
+                        resolve(element);
+                    } else if (Date.now() - startTime > timeout) {
+                        clearInterval(interval);
+                        reject(new Error(`Timeout: Element "${selector}" not found or not visible after ${timeout}ms.`));
+                    }
+                }, 100);
+            });
+        }
+
+        function waitForElementToDisappear(selector, parent = document, timeout = 10000) {
+            return new Promise((resolve, reject) => {
+                const startTime = Date.now();
+                const interval = setInterval(() => {
+                    if (stopAutomationSignal) {
+                        clearInterval(interval);
+                        reject(new Error("Automation stopped by user during waitForElementToDisappear."));
+                        return;
+                    }
+                    const element = parent.querySelector(selector);
+                    if (!element || element.offsetParent === null) {
+                        clearInterval(interval);
+                        resolve();
+                    } else if (Date.now() - startTime > timeout) {
+                        clearInterval(interval);
+                        reject(new Error(`Timeout: Element "${selector}" still present after ${timeout}ms.`));
+                    }
+                }, 100);
+            });
+        }
+
+        /**
+         * UPDATED HELPER: Finds the YouTube/Websites source button structurally, never
+         * by label text (wording differs across UI versions and languages).
+         *
+         * The button is identified by its icon only:
+         * - a mat-icon carrying the `youtube-icon` class, or
+         * - any icon-font element whose ligature glyph is `video_youtube`
+         *   (a font glyph name — identical in every UI language).
+         *
+         * The clickable ancestor then differs per UI generation and is resolved with
+         * closest() up the real DOM path instead of matching one hardcoded class:
+         * - 2026 UI: plain <button.source-action-button> inside the add-source dialog
+         * - older UI: <button.drop-zone-icon-button> or <mat-chip[tabindex="0"]>
+         *
+         * @param {Element} searchContext - The element to search within (e.g., the dialog).
+         * @param {number} timeout - Maximum time to wait in milliseconds.
+         * @returns {Promise<Element>} Resolves with the clickable button element.
+         */
+        function findYoutubeChip(searchContext, timeout = 5000) {
+            console.log("Searching for YouTube/Websites button (v6 method - structural icon lookup)...");
+            return new Promise((resolve, reject) => {
+                const startTime = Date.now();
+                const interval = setInterval(() => {
+                    if (stopAutomationSignal) {
+                        clearInterval(interval);
+                        reject(new Error("Automation stopped by user during findYoutubeChip."));
+                        return;
+                    }
+
+                    // Icon candidates by class first, then by ligature glyph name across
+                    // the icon element types this UI family has used. No text/label matching.
+                    const iconCandidates = [
+                        ...searchContext.querySelectorAll('.youtube-icon, [class*="youtube-icon"]'),
+                        ...[...searchContext.querySelectorAll('mat-icon, labs-icon, yt-icon, span')]
+                            .filter(el => (el.textContent || "").trim() === 'video_youtube'),
+                    ];
+
+                    let youtubeButton = null;
+                    for (const icon of iconCandidates) {
+                        // Known source-action button classes first (2026 .source-action-button,
+                        // older .drop-zone-icon-button), then any clickable button ancestor,
+                        // then the old Angular chip. The prioritized match also prevents the
+                        // youtube icons shown next to already-added sources in the notebook's
+                        // source list from hijacking the lookup.
+                        const clickable = icon.closest('button.source-action-button, button.drop-zone-icon-button')
+                            || icon.closest('button')
+                            || icon.closest('mat-chip[tabindex="0"]');
+                        if (clickable && clickable.offsetParent !== null) {
+                            youtubeButton = clickable;
+                            break;
+                        }
+                    }
+
+                    if (youtubeButton) {
+                        clearInterval(interval);
+                        console.log("Found YouTube/Websites button:", youtubeButton);
+                        resolve(youtubeButton);
+                    } else if (Date.now() - startTime > timeout) {
+                        clearInterval(interval);
+                        reject(new Error(`Timeout: YouTube/Websites source button not found after ${timeout}ms.`));
+                    }
+                }, 250);
+            });
+        }
+
+        /**
+         * Finds the "+ Add sources" button using structural selectors only (language-agnostic).
+         * Primary: source-picker nb-button button (2026 Tailwind UI).
+         * Fallbacks: the old .add-source-button class, and any visible button inside
+         * source-picker whose mat-icon ligature is "add" — ligature names are icon-font
+         * glyph names, identical in every UI language.
+         */
+        async function findAddSourceButton(timeout = 7000) {
+            const startTime = Date.now();
+            while (Date.now() - startTime < timeout) {
+                if (stopAutomationSignal) throw new Error("Automation stopped by user.");
+                for (const selector of [NOTEBOOKLM_SELECTORS.addSourceButton, NOTEBOOKLM_SELECTORS.addSourceButtonFallback]) {
+                    const btn = document.querySelector(selector);
+                    if (btn && btn.offsetParent !== null) return btn;
                 }
-            });
-        return true;
-    } else if (message.action === "STOP_NOTEBOOKLM_AUTOMATION") {
-        console.log("Received STOP_NOTEBOOKLM_AUTOMATION signal.");
-        stopAutomationSignal = true;
-        if (currentResponseCallback) {
-            try {
-                currentResponseCallback({ status: "stopped", data: "Automation stop signal received by content script." });
-            } catch (e) {
-                console.warn("Could not send 'stopped' confirmation via original callback:", e);
+                const pickerButtons = document.querySelectorAll('source-picker button');
+                for (const btn of pickerButtons) {
+                    if (btn.offsetParent === null) continue;
+                    const icon = btn.querySelector('mat-icon');
+                    if (icon && (icon.textContent || '').trim() === 'add') return btn;
+                }
+                await new Promise(resolve => setTimeout(resolve, 250));
             }
-            currentResponseCallback = null;
-        }
-        sendResponse({ status: "acknowledged_stop" });
-        return false;
-    }
-    return false;
-});
-
-async function addVideosToNotebookLM(videos) {
-    const BATCH_SIZE = 15;
-
-    const totalBatches = Math.ceil(videos.length / BATCH_SIZE);
-
-    if (currentResponseCallback) {
-        try {
-            currentResponseCallback({ status: "progress", data: `Starting to add ${videos.length} videos in ${totalBatches} batch(es) of up to ${BATCH_SIZE}...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-        } catch (e) { console.warn("Could not send initial progress."); }
-    } else {
-        chrome.runtime.sendMessage({ status: "progress", data: `Starting to add ${videos.length} videos in ${totalBatches} batch(es) of up to ${BATCH_SIZE}...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-    }
-
-    await delay(500);
-
-    for (let batchStart = 0; batchStart < videos.length; batchStart += BATCH_SIZE) {
-        if (stopAutomationSignal) {
-            console.log("Automation stopping due to signal.");
-            chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped by user.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-            return;
+            throw new Error('Timeout: Add sources button not found (source-picker nb-button button).');
         }
 
-        const batch = videos.slice(batchStart, batchStart + BATCH_SIZE);
-        const batchNumber = Math.floor(batchStart / BATCH_SIZE) + 1;
-        const batchLinks = batch.map(v => v.link);
-        const progressMessage = `Adding batch ${batchNumber} of ${totalBatches}: videos ${batchStart + 1}-${batchStart + batch.length} of ${videos.length}...`;
-        console.log(progressMessage);
-        chrome.runtime.sendMessage({ status: "progress", data: progressMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+        async function typeIntoInput(inputElement, text) {
+            if (stopAutomationSignal) throw new Error("Automation stopped by user during typeIntoInput.");
+            inputElement.focus();
+            inputElement.value = text;
+            inputElement.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+            inputElement.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
 
-        try {
-            // 1. Click the main "+ Add sources" button (structural selectors, language-agnostic)
-            const addSourceBtn = await findAddSourceButton();
-            addSourceBtn.click();
+        function delay(ms) {
+            return new Promise((resolve, reject) => {
+                const timeoutId = setTimeout(resolve, ms);
+                const intervalId = setInterval(() => {
+                    if (stopAutomationSignal) {
+                        clearTimeout(timeoutId);
+                        clearInterval(intervalId);
+                        reject(new Error("Automation stopped by user during delay."));
+                    }
+                }, 100);
+                setTimeout(() => clearInterval(intervalId), ms);
+            });
+        }
+
+        // --- Main Logic ---
+
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message.action === "ADD_VIDEOS_TO_NOTEBOOKLM") {
+                console.log("Received videos to add:", message.videos);
+                stopAutomationSignal = false;
+                currentResponseCallback = sendResponse;
+
+                if (!message.videos || message.videos.length === 0) {
+                    currentResponseCallback({ status: "error", data: "No videos provided to add." });
+                    return false;
+                }
+
+                addVideosToNotebookLM(message.videos)
+                    .then(() => {
+                        if (!stopAutomationSignal) {
+                            currentResponseCallback({ status: "complete", data: "All videos processed." });
+                        }
+                    })
+                    .catch(err => {
+                        console.error("Error during batch video processing in content script:", err);
+                        if (!err.message.includes("Automation stopped by user")) {
+                            try {
+                                currentResponseCallback({ status: "error", data: `Content script error: ${err.message}` });
+                            } catch (e) {
+                                console.warn("Could not send error response back to popup:", e);
+                            }
+                        }
+                    });
+                return true;
+            } else if (message.action === "STOP_NOTEBOOKLM_AUTOMATION") {
+                console.log("Received STOP_NOTEBOOKLM_AUTOMATION signal.");
+                stopAutomationSignal = true;
+                // Also notify asynchronously: the popup that started the run may be
+                // long gone (its response channel with it), and a reopened popup
+                // must receive "stopped" to clear its persisted running state.
+                try {
+                    chrome.runtime.sendMessage({
+                        status: "stopped",
+                        data: "Automation stop signal received by content script.",
+                        type: "NOTEBOOKLM_AUTOMATION_STATUS"
+                    }, function () { void chrome.runtime.lastError; /* no receiver: fine */ });
+                } catch (e) {
+                    console.warn("Could not send stopped notification:", e);
+                }
+                if (currentResponseCallback) {
+                    try {
+                        currentResponseCallback({ status: "stopped", data: "Automation stop signal received by content script." });
+                    } catch (e) {
+                        console.warn("Could not send 'stopped' confirmation via original callback:", e);
+                    }
+                    currentResponseCallback = null;
+                }
+                sendResponse({ status: "acknowledged_stop" });
+                return false;
+            }
+            return false;
+        });
+
+        async function addVideosToNotebookLM(videos) {
+            const BATCH_SIZE = 15;
+
+            const totalBatches = Math.ceil(videos.length / BATCH_SIZE);
+
+            if (currentResponseCallback) {
+                try {
+                    currentResponseCallback({ status: "progress", data: `Starting to add ${videos.length} videos in ${totalBatches} batch(es) of up to ${BATCH_SIZE}...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+                } catch (e) { console.warn("Could not send initial progress."); }
+            } else {
+                chrome.runtime.sendMessage({ status: "progress", data: `Starting to add ${videos.length} videos in ${totalBatches} batch(es) of up to ${BATCH_SIZE}...`, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+            }
+
             await delay(500);
 
-            // 2. Find and click the "YouTube/Websites" chip. Searched on the whole
-            //    document because the 2026 Tailwind shell may not wrap the picker in
-            //    a mat-dialog-container; waitForElement skips hidden elements anyway.
-            const youtubeButtonInModal = await findYoutubeChip(document, 5000);
-            youtubeButtonInModal.click();
-            await delay(500);
+            for (let batchStart = 0; batchStart < videos.length; batchStart += BATCH_SIZE) {
+                if (stopAutomationSignal) {
+                    console.log("Automation stopping due to signal.");
+                    chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped by user.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+                    return;
+                }
 
-            // 3. Type all URLs in this batch, newline-separated (textarea accepts multiple)
-            let youtubeLinkInput;
-            try {
-                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInput, document, 3000);
-            } catch (e) {
-                console.log("Primary input selector failed, trying fallback...");
-                youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInputFallback, document, 3000);
+                const batch = videos.slice(batchStart, batchStart + BATCH_SIZE);
+                const batchNumber = Math.floor(batchStart / BATCH_SIZE) + 1;
+                const batchLinks = batch.map(v => v.link);
+                const progressMessage = `Adding batch ${batchNumber} of ${totalBatches}: videos ${batchStart + 1}-${batchStart + batch.length} of ${videos.length}...`;
+                console.log(progressMessage);
+                chrome.runtime.sendMessage({ status: "progress", data: progressMessage, type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+
+                try {
+                    // 1. Click the main "+ Add sources" button (structural selectors, language-agnostic)
+                    const addSourceBtn = await findAddSourceButton();
+                    addSourceBtn.click();
+                    await delay(500);
+
+                    // 2. Find and click the "YouTube/Websites" chip. Searched on the whole
+                    //    document because the 2026 Tailwind shell may not wrap the picker in
+                    //    a mat-dialog-container; waitForElement skips hidden elements anyway.
+                    const youtubeButtonInModal = await findYoutubeChip(document, 5000);
+                    youtubeButtonInModal.click();
+                    await delay(500);
+
+                    // 3. Type all URLs in this batch, newline-separated (textarea accepts multiple).
+                    //    Remember WHICH input selector matched: step 5 must wait on the same
+                    //    element to disappear, or the wait resolves instantly when the fallback
+                    //    input was used (the primary selector never existed on old UIs).
+                    let youtubeLinkInput;
+                    let usedInputSelector;
+                    try {
+                        youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInput, document, 3000);
+                        usedInputSelector = NOTEBOOKLM_SELECTORS.youtubeLinkInput;
+                    } catch (e) {
+                        console.log("Primary input selector failed, trying fallback...");
+                        youtubeLinkInput = await waitForElement(NOTEBOOKLM_SELECTORS.youtubeLinkInputFallback, document, 3000);
+                        usedInputSelector = NOTEBOOKLM_SELECTORS.youtubeLinkInputFallback;
+                    }
+                    await typeIntoInput(youtubeLinkInput, batchLinks.join("\n"));
+                    await delay(300);
+
+                    // 4. Click the "Insert" button (try primary selector, then fallback)
+                    let insertButton;
+                    try {
+                        insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButton, document, 3000);
+                    } catch (e) {
+                        console.log("Primary Insert selector failed, trying fallback...");
+                        insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButtonFallback, document, 3000);
+                    }
+                    insertButton.click();
+
+                    // 5. Wait for the input that was actually used to disappear (Insert
+                    //    processed). Larger batches take longer.
+                    await waitForElementToDisappear(usedInputSelector, document, 60000);
+                    console.log(`Batch ${batchNumber} of ${totalBatches} submitted (${batch.length} URLs).`);
+
+                    chrome.runtime.sendMessage({
+                        status: "video_success_batch",
+                        data: `Batch ${batchNumber} of ${totalBatches} added (${batch.length} videos).`,
+                        type: "NOTEBOOKLM_AUTOMATION_STATUS",
+                        video_links_added: batchLinks
+                    });
+                    await delay(1500 + Math.random() * 500);
+
+                } catch (error) {
+                    if (stopAutomationSignal || (error.message && error.message.includes("Automation stopped by user"))) {
+                        console.log("Process caught stop signal during batch submission.");
+                        chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped during batch submission.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
+                        return;
+                    }
+                    const errorMessage = `Failed to submit batch ${batchNumber} (${batch.length} URLs starting at index ${batchStart}): ${error.message}. Stopping. Failed links: ${batchLinks.join(", ")}`;
+                    console.error(errorMessage, error);
+                    chrome.runtime.sendMessage({
+                        status: "error",
+                        data: `Batch ${batchNumber} failed: ${error.message}`,
+                        type: "NOTEBOOKLM_AUTOMATION_STATUS",
+                        failed_links: batchLinks
+                    });
+                    return;
+                }
             }
-            await typeIntoInput(youtubeLinkInput, batchLinks.join("\n"));
-            await delay(300);
-
-            // 4. Click the "Insert" button (try primary selector, then fallback)
-            let insertButton;
-            try {
-                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButton, document, 3000);
-            } catch (e) {
-                console.log("Primary Insert selector failed, trying fallback...");
-                insertButton = await waitForElement(NOTEBOOKLM_SELECTORS.submitButtonFallback, document, 3000);
+            if (!stopAutomationSignal) {
+                console.log("All batches processed successfully (or attempted).");
             }
-            insertButton.click();
-
-            // 5. Wait for the textarea to disappear (Insert processed). Larger batches take longer.
-            await waitForElementToDisappear(NOTEBOOKLM_SELECTORS.youtubeLinkInput, document, 60000);
-            console.log(`Batch ${batchNumber} of ${totalBatches} submitted (${batch.length} URLs).`);
-
-            chrome.runtime.sendMessage({
-                status: "video_success_batch",
-                data: `Batch ${batchNumber} of ${totalBatches} added (${batch.length} videos).`,
-                type: "NOTEBOOKLM_AUTOMATION_STATUS",
-                video_links_added: batchLinks
-            });
-            await delay(1500 + Math.random() * 500);
-
-        } catch (error) {
-            if (stopAutomationSignal || (error.message && error.message.includes("Automation stopped by user"))) {
-                console.log("Process caught stop signal during batch submission.");
-                chrome.runtime.sendMessage({ status: "stopped", data: "Automation stopped during batch submission.", type: "NOTEBOOKLM_AUTOMATION_STATUS" });
-                return;
-            }
-            const errorMessage = `Failed to submit batch ${batchNumber} (${batch.length} URLs starting at index ${batchStart}): ${error.message}. Stopping. Failed links: ${batchLinks.join(", ")}`;
-            console.error(errorMessage, error);
-            chrome.runtime.sendMessage({
-                status: "error",
-                data: `Batch ${batchNumber} failed: ${error.message}`,
-                type: "NOTEBOOKLM_AUTOMATION_STATUS",
-                failed_links: batchLinks
-            });
-            return;
         }
-    }
-    if (!stopAutomationSignal) {
-        console.log("All batches processed successfully (or attempted).");
-    }
+    })();
 }

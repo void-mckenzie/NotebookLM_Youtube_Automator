@@ -1,5 +1,115 @@
 // This script runs when the popup is opened.
 document.addEventListener('DOMContentLoaded', async function() {
+
+  /**
+   * Extracts the video ID (exactly 11 chars) from any YouTube video URL shape
+   * (watch?v=, /shorts/<id>, /live/<id>, /embed/<id>, youtu.be/<id>), or null
+   * for non-video URLs. Used to dedupe list entries regardless of the surface
+   * they were added from. The exact length rejects non-ID path segments
+   * (e.g. /embed/videoseries) that would produce broken watch links.
+   */
+  function getYouTubeVideoId(rawUrl) {
+    let id = null;
+    try {
+      const u = new URL(rawUrl);
+      const host = u.hostname.replace(/^www\./, "");
+      if (host !== "youtube.com" && host !== "youtu.be" && !host.endsWith(".youtube.com")) return null;
+      const v = u.searchParams.get("v");
+      if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) id = v;
+      if (!id && host === "youtu.be") {
+        const seg = u.pathname.slice(1);
+        if (/^[A-Za-z0-9_-]{11}$/.test(seg)) id = seg;
+      }
+      if (!id) {
+        const m = u.pathname.match(/^\/(?:shorts|live|embed)\/([A-Za-z0-9_-]{11})/);
+        if (m) id = m[1];
+      }
+    } catch (e) {
+      return null;
+    }
+    // "videoseries" is YouTube's placeholder path token for playlist embeds
+    // (/embed/videoseries?list=...) — not a video ID, and exactly 11 chars
+    // long, so the length test alone cannot reject it.
+    return id && id !== "videoseries" ? id : null;
+  }
+
+  // True when the URL is any kind of YouTube video page (watch, Shorts, live, embed).
+  function isYouTubeVideoPage(rawUrl) {
+    return Boolean(getYouTubeVideoId(rawUrl));
+  }
+
+  // Rows stored before the title fix may carry the stale generic site name.
+  function isJunkTitle(title) {
+    return !title || !title.trim() || title.trim().toLowerCase() === "youtube";
+  }
+
+  /**
+   * Merges extracted playlist items into the current list, keeping anything
+   * already collected. Dedupes by video ID for YouTube links (exact URL
+   * otherwise), heals stale "YouTube" titles on rows stored by older versions,
+   * and refreshes matched rows to canonical links. Shared by the live message
+   * handler and the pendingExtraction path (results that arrived while the
+   * popup was closed).
+   *
+   * @returns {{added: number, skipped: number, healed: number}}
+   */
+  function mergePlaylistItems(items) {
+    const existingLinks = new Set(currentPlaylistData.map(v => v.link));
+    const idToIndex = new Map();
+    currentPlaylistData.forEach((v, i) => {
+      const id = getYouTubeVideoId(v.link);
+      if (id) idToIndex.set(id, i);
+    });
+    const newItems = [];
+    const newIds = new Set();
+    let healed = 0;
+    for (const item of (items || [])) {
+      if (!item || !item.link) continue;
+      const videoId = getYouTubeVideoId(item.link);
+      if (videoId) {
+        const existingIndex = idToIndex.get(videoId);
+        if (existingIndex !== undefined) {
+          const existing = currentPlaylistData[existingIndex];
+          if (isJunkTitle(existing.title) && !isJunkTitle(item.title)) {
+            existing.title = item.title;
+            existing.link = item.link; // refresh legacy &list=/&index= links to canonical form
+            healed++;
+          }
+          continue;
+        }
+        if (newIds.has(videoId)) continue; // same video twice in one extraction
+        newIds.add(videoId);
+      } else {
+        if (existingLinks.has(item.link)) continue;
+        existingLinks.add(item.link);
+      }
+      newItems.push(item);
+    }
+    currentPlaylistData = currentPlaylistData.concat(newItems);
+    return { added: newItems.length, skipped: (items || []).length - newItems.length, healed };
+  }
+
+  /**
+   * Adds one video to the list, or — if the same video is already present —
+   * heals a stale "YouTube" title on the stored row. Returns a status string.
+   */
+  function mergeSingleVideo(video) {
+    const incomingId = getYouTubeVideoId(video.link);
+    const existingIndex = currentPlaylistData.findIndex(v =>
+      v.link === video.link || (incomingId && getYouTubeVideoId(v.link) === incomingId));
+    if (existingIndex === -1) {
+      currentPlaylistData.push(video);
+      return `Video "${video.title.substring(0, 30)}..." added. Total: ${currentPlaylistData.length}.`;
+    }
+    const existing = currentPlaylistData[existingIndex];
+    if (isJunkTitle(existing.title) && !isJunkTitle(video.title)) {
+      existing.title = video.title;
+      existing.link = video.link;
+      return `Video "${video.title.substring(0, 30)}..." is already in the list — title updated.`;
+    }
+    return `Video "${video.title.substring(0, 30)}..." is already in the list.`;
+  }
+
   // Get references to HTML elements
   const actionButton = document.getElementById('actionButton');
   const resetButton = document.getElementById('resetAllButton');
@@ -55,7 +165,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (currentTabUrl && currentTabUrl.includes("youtube.com/playlist")) {
       actionButton.textContent = "Extract Playlist";
       actionButton.disabled = isNotebookLMAutomationRunning;
-    } else if (currentTabUrl && currentTabUrl.includes("youtube.com/watch")) {
+    } else if (currentTabUrl && isYouTubeVideoPage(currentTabUrl)) {
       actionButton.textContent = "Add Current Video";
       actionButton.disabled = isNotebookLMAutomationRunning;
     } else if (onNotebookLMPage) {
@@ -135,7 +245,10 @@ document.addEventListener('DOMContentLoaded', async function() {
             deleteBtn.disabled = isNotebookLMAutomationRunning;
             deleteBtn.addEventListener('click', async () => {
                 if (isNotebookLMAutomationRunning) return;
-                currentPlaylistData.splice(index, 1);
+                // Delete by identity, not by captured index: a second click
+                // during the await below would otherwise splice a shifted
+                // index and silently delete an adjacent row.
+                currentPlaylistData = currentPlaylistData.filter(v => v !== item);
                 await saveData();
                 await displayDataInPopup(currentPlaylistData);
                 statusElement.textContent = `${currentPlaylistData.length} video(s) remaining.`;
@@ -207,12 +320,50 @@ document.addEventListener('DOMContentLoaded', async function() {
         videosProcessedInCurrentBatch = 0;
     }
 
+    // Pick up extraction results that arrived while the popup was closed
+    // (content.js persists them to storage when the message has no receiver).
+    const { pendingExtraction } = await chrome.storage.local.get(['pendingExtraction']);
+    if (pendingExtraction && pendingExtraction.type) {
+      try {
+        if (pendingExtraction.type === "PLAYLIST_DATA" && Array.isArray(pendingExtraction.data)) {
+          const { added, skipped, healed } = mergePlaylistItems(pendingExtraction.data);
+          let pendingMsg = `Added while popup was closed: ${added} new video(s)` +
+            (skipped > 0 ? `, ${skipped} already in list` : "") +
+            `. Total: ${currentPlaylistData.length}.`;
+          if (healed > 0) pendingMsg += ` ${healed} title(s) updated.`;
+          statusElement.textContent = pendingMsg;
+          await saveData();
+        } else if (pendingExtraction.type === "SINGLE_VIDEO_DATA" && pendingExtraction.video) {
+          statusElement.textContent = mergeSingleVideo(pendingExtraction.video);
+          await saveData();
+        } else if (pendingExtraction.type === "EXTRACTION_ERROR" && pendingExtraction.error) {
+          statusElement.textContent = pendingExtraction.error;
+        }
+      } finally {
+        await chrome.storage.local.remove('pendingExtraction');
+      }
+    }
+
     await displayDataInPopup(currentPlaylistData);
   }
 
   await loadData();
 
-  chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+  // The listener must NOT be async: Chrome only keeps the response channel
+  // open for a listener that synchronously returns literal `true` (a returned
+  // Promise closes the port and every sendResponse call becomes a dead write).
+  // The async work happens in handleMessage; the wrapper returns true up front.
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    handleMessage(message).then((response) => {
+      try { sendResponse(response); } catch (e) { /* channel already closed */ }
+    }).catch((err) => {
+      console.error("Popup message handler error:", err);
+      try { sendResponse({ status: "handler_error" }); } catch (e) { /* channel already closed */ }
+    });
+    return true;
+  });
+
+  async function handleMessage(message) {
     console.log("Popup received message:", message);
 
     if (message.type === "NOTEBOOKLM_AUTOMATION_STATUS") {
@@ -347,8 +498,7 @@ document.addEventListener('DOMContentLoaded', async function() {
             notebookLMStatusElement.textContent = statusMsg;
         }
         await refreshButtonStates();
-        sendResponse({ received: true });
-        return true;
+        return { received: true };
     }
 
     // YouTube extraction message handling (no changes here)
@@ -356,8 +506,12 @@ document.addEventListener('DOMContentLoaded', async function() {
     let responseMsg = { status: "Message processed by popup" };
     if (message.type === "PLAYLIST_DATA") {
       if (message.data && Array.isArray(message.data)) {
-        currentPlaylistData = message.data;
-        statusElement.textContent = `Playlist extracted: ${currentPlaylistData.length} videos.`;
+        const { added, skipped, healed } = mergePlaylistItems(message.data);
+        let mergeMsg = skipped > 0
+          ? `Playlist extracted: ${added} new video(s), ${skipped} already in list. Total: ${currentPlaylistData.length}.`
+          : `Playlist extracted: ${added} videos. Total: ${currentPlaylistData.length}.`;
+        if (healed > 0) mergeMsg += ` ${healed} title(s) updated.`;
+        statusElement.textContent = mergeMsg;
         await saveData();
       } else {
         statusElement.textContent = "No videos found in playlist or data format was incorrect.";
@@ -365,13 +519,11 @@ document.addEventListener('DOMContentLoaded', async function() {
       responseMsg.status = "Playlist data received";
     } else if (message.type === "SINGLE_VIDEO_DATA") {
       if (message.video && message.video.title && message.video.link) {
-        if (!currentPlaylistData.some(v => v.link === message.video.link)) {
-            currentPlaylistData.push(message.video);
-            statusElement.textContent = `Video "${message.video.title.substring(0,30)}..." added. Total: ${currentPlaylistData.length}.`;
-            await saveData();
-        } else {
-            statusElement.textContent = `Video "${message.video.title.substring(0,30)}..." is already in the list.`;
-        }
+        // mergeSingleVideo matches by video ID (not exact link) so the same
+        // video added from a playlist, a watch page, or a Short is recognized
+        // as the same video, and heals stale "YouTube" titles.
+        statusElement.textContent = mergeSingleVideo(message.video);
+        await saveData();
       } else {
         statusElement.textContent = "Failed to extract single video (missing title/link).";
       }
@@ -381,9 +533,8 @@ document.addEventListener('DOMContentLoaded', async function() {
       responseMsg.status = "Extraction error acknowledged";
     }
     await displayDataInPopup(currentPlaylistData);
-    sendResponse(responseMsg);
-    return true;
-  });
+    return responseMsg;
+  }
 
   actionButton.addEventListener('click', async () => {
     if (isNotebookLMAutomationRunning) return;
@@ -398,7 +549,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         await refreshButtonStates();
         return;
       }
-      if (url.includes("youtube.com/playlist") || url.includes("youtube.com/watch")) {
+      if (url.includes("youtube.com/playlist") || isYouTubeVideoPage(url)) {
         await chrome.scripting.executeScript({
           target: { tabId: currentTab.id },
           files: ['content.js']
@@ -558,13 +709,22 @@ document.addEventListener('DOMContentLoaded', async function() {
     stopNotebookLMButton.disabled = true;
 
     try {
-        await chrome.tabs.sendMessage(notebookLMTargetTabId, {
+        const ack = await chrome.tabs.sendMessage(notebookLMTargetTabId, {
             action: "STOP_NOTEBOOKLM_AUTOMATION"
         });
-        console.log("Stop signal sent to NotebookLM content script.");
-        // Content script will send "stopped" status, handled by listener
-        // which will set isNotebookLMAutomationRunning = false and clear storage state.
-        // No need to reset batch counters here as the listener will handle it on "stopped"
+        console.log("Stop signal sent to NotebookLM content script:", ack);
+        // Clear the running state here rather than waiting for the content
+        // script's "stopped" message: if the popup was closed and reopened,
+        // nothing is actually running anymore and that message never comes —
+        // without this the popup would be stuck in "running" forever. When a
+        // run IS active, the async "stopped" message lands afterwards and
+        // this cleanup is simply idempotent.
+        isNotebookLMAutomationRunning = false;
+        totalVideosInCurrentBatch = 0;
+        videosProcessedInCurrentBatch = 0;
+        await chrome.storage.local.remove(['notebookLMAutomationState']);
+        notebookLMStatusElement.textContent = "Stopped.";
+        await refreshButtonStates();
     } catch (error) {
         console.error("Error sending stop signal to NotebookLM content script:", error);
         notebookLMStatusElement.textContent = `Error sending stop signal: ${error.message}. Manually check NotebookLM.`;

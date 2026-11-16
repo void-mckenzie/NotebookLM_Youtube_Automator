@@ -2,23 +2,72 @@
 // Its purpose is to extract relevant video data and send it to the popup script.
 
 /**
+ * Extracts the video ID (exactly 11 chars) from any YouTube video URL shape:
+ * watch?v=..., /shorts/<id>, /live/<id>, /embed/<id>, youtu.be/<id>.
+ * Returns null for non-video URLs. The exact length matters: looser patterns
+ * would match non-ID path segments (e.g. /embed/videoseries) and produce
+ * broken watch links.
+ */
+function getYouTubeVideoId(rawUrl) {
+    let id = null;
+    try {
+        const u = new URL(rawUrl, window.location.origin);
+        const host = u.hostname.replace(/^www\./, "");
+        if (host !== "youtube.com" && host !== "youtu.be" && !host.endsWith(".youtube.com")) return null;
+        const v = u.searchParams.get("v");
+        if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) id = v;
+        if (!id && host === "youtu.be") {
+            const seg = u.pathname.slice(1);
+            if (/^[A-Za-z0-9_-]{11}$/.test(seg)) id = seg;
+        }
+        if (!id) {
+            const m = u.pathname.match(/^\/(?:shorts|live|embed)\/([A-Za-z0-9_-]{11})/);
+            if (m) id = m[1];
+        }
+    } catch (e) {
+        return null;
+    }
+    // "videoseries" is YouTube's placeholder path token for playlist embeds
+    // (/embed/videoseries?list=...) — not a video ID, and exactly 11 chars
+    // long, so the length test alone cannot reject it.
+    return id && id !== "videoseries" ? id : null;
+}
+
+/**
+ * The canonical form of a video URL, so the same video added from different
+ * surfaces (watch page, Shorts, playlist entries with &list=/&index= params)
+ * always produces an identical link and can be deduplicated.
+ */
+function canonicalWatchUrl(rawUrl) {
+    const id = getYouTubeVideoId(rawUrl);
+    return id ? `https://www.youtube.com/watch?v=${id}` : rawUrl;
+}
+
+/**
  * Determines the type of YouTube page (playlist or single video) and calls the appropriate extraction function.
  */
 function runExtraction() {
     const currentUrl = window.location.href;
 
-    if (currentUrl.includes("/playlist?list=")) {
+    // Path-based playlist check: `list` may not be the first query param
+    // (e.g. /playlist?app=desktop&list=...), which a substring test misses.
+    let isPlaylistPage = false;
+    try {
+        isPlaylistPage = new URL(currentUrl).pathname === "/playlist";
+    } catch (e) { /* malformed URL: fall through to the video check */ }
+
+    if (isPlaylistPage) {
         extractPlaylistDataAndSend();
-    } else if (currentUrl.includes("/watch?v=")) {
+    } else if (getYouTubeVideoId(currentUrl)) {
         extractSingleVideoDataAndSend();
     } else {
         // This case should ideally not be reached if host_permissions are correctly set
         // and popup.js checks the URL before injecting.
         console.warn("Content Script: Not a recognized YouTube playlist or watch page for extraction.");
-        chrome.runtime.sendMessage({
+        sendOrStore({
             type: "EXTRACTION_ERROR",
             error: "Page is not a YouTube playlist or video page (from content script)."
-        }, handleResponse);
+        });
     }
 }
 
@@ -180,57 +229,146 @@ async function extractPlaylistDataAndSend() {
         console.warn("Content script: Strict list-param filter matched nothing; falling back to unfiltered structural extraction.");
     }
 
-    console.log(`Content script: Extracted ${finalData.length} videos from playlist (${layout} layout). Sending to popup.`);
-    chrome.runtime.sendMessage({ type: "PLAYLIST_DATA", data: finalData }, handleResponse);
-}
-
-/**
- * Extracts the title and link of the current single video on a YouTube watch page.
- * Sends the data as a single video object to the popup.
- */
-function extractSingleVideoDataAndSend() {
-    console.log("Content script: Starting single video extraction...");
-    let title = "";
-    let link = window.location.href; // The current page URL is the video link
-
-    // Attempt 1: Try to get title from the 'og:title' meta tag (often more stable)
-    const metaTitleElement = document.querySelector('meta[property="og:title"]');
-    if (metaTitleElement && metaTitleElement.content) {
-        title = metaTitleElement.content;
-    }
-
-    // Attempt 2: Fallback to common H1 selectors for the video title if meta tag fails
-    // These selectors are highly likely to change with YouTube updates.
-    if (!title) {
-        const h1Selectors = [
-            'h1.ytd-watch-metadata #video-title', // Older structure
-            'h1.title yt-formatted-string.ytd-video-primary-info-renderer', // Another common structure
-            'yt-formatted-string.ytd-watch-metadata[slot="title"]', // Newer structure often seen
-            '#title h1 yt-formatted-string', // More generic title structure
-            '#info-contents .title yt-formatted-string' // Another variation
-        ];
-        for (const selector of h1Selectors) {
-            const h1TitleElement = document.querySelector(selector);
-            if (h1TitleElement && h1TitleElement.textContent) {
-                title = h1TitleElement.textContent.trim();
-                break; // Found title, no need to check other selectors
-            }
+    // Normalize to canonical watch?v=<id> links (drops &list=/&index= context)
+    // so the same video added from a playlist and from its watch page compares
+    // equal for the popup's deduplication, and dedupe within the playlist.
+    const seenIds = new Set();
+    const normalizedData = [];
+    for (const item of finalData) {
+        const id = getYouTubeVideoId(item.link);
+        if (id) {
+            if (seenIds.has(id)) continue; // Same video twice in one playlist
+            seenIds.add(id);
+            normalizedData.push({ title: item.title, link: canonicalWatchUrl(item.link) });
+        } else {
+            normalizedData.push(item);
         }
     }
 
-    if (title && link) {
-        // Optional: Clean the link if it's part of a playlist view but we only want the specific video
-        link = link.split('&list=')[0].split('&index=')[0];
+    console.log(`Content script: Extracted ${normalizedData.length} videos from playlist (${layout} layout). Sending to popup.`);
+    sendOrStore({ type: "PLAYLIST_DATA", data: normalizedData });
+}
 
+/**
+ * A video page reached by in-app (SPA) navigation keeps the previous page's
+ * og:title — from the home feed that is literally "YouTube" — because YouTube
+ * only sets that meta tag on full page loads. So og:title alone can't be
+ * trusted: it may be missing (fresh page) or stale (SPA navigation). A title
+ * candidate is only accepted when it is non-empty and not the generic
+ * "YouTube" site name.
+ */
+function isUsableVideoTitle(title) {
+    return Boolean(title) && title.trim().length > 0 && title.trim().toLowerCase() !== "youtube";
+}
+
+/**
+ * Gathers video title candidates in priority order: the watch page's H1 title
+ * elements, the document title (with YouTube's " - YouTube" suffix stripped),
+ * and only then the og:title meta tag.
+ *
+ * og:title is LAST because YouTube only writes it on full page loads: after
+ * in-app (SPA) navigation it keeps the PREVIOUS page's value — from the home
+ * feed that is literally "YouTube", and from another video it is that video's
+ * title. The DOM sources above are refreshed by the SPA navigation itself, so
+ * they reflect the video actually on screen.
+ */
+function collectVideoTitleCandidates() {
+    const candidates = [];
+
+    // H1 selectors across YouTube's watch/shorts layouts. These are highly
+    // likely to change with YouTube updates.
+    const h1Selectors = [
+        'h1.ytd-watch-metadata #video-title', // Older structure
+        'h1.title yt-formatted-string.ytd-video-primary-info-renderer', // Another common structure
+        'yt-formatted-string.ytd-watch-metadata[slot="title"]', // Newer structure often seen
+        '#title h1 yt-formatted-string', // More generic title structure
+        '#info-contents .title yt-formatted-string' // Another variation
+    ];
+    for (const selector of h1Selectors) {
+        const h1TitleElement = document.querySelector(selector);
+        if (h1TitleElement && h1TitleElement.textContent && h1TitleElement.textContent.trim()) {
+            candidates.push(h1TitleElement.textContent.trim());
+        }
+    }
+
+    if (document.title && document.title.trim()) {
+        candidates.push(document.title.trim().replace(/\s*-\s*YouTube\s*$/i, "").trim());
+    }
+
+    const metaTitleElement = document.querySelector('meta[property="og:title"]');
+    if (metaTitleElement && metaTitleElement.content) {
+        candidates.push(metaTitleElement.content.trim());
+    }
+
+    return candidates;
+}
+
+/**
+ * Waits briefly for a usable title to appear (the user may click "Add" while
+ * the page is still hydrating), then falls back to any non-empty candidate.
+ *
+ * @param {number} timeout - Maximum time to wait in milliseconds.
+ * @returns {Promise<string|null>} The video title, or null if nothing usable.
+ */
+async function waitForVideoTitle(timeout = 8000) {
+    const startTime = Date.now();
+    let fallback = null;
+    while (Date.now() - startTime <= timeout) {
+        const candidates = collectVideoTitleCandidates();
+        for (const candidate of candidates) {
+            if (isUsableVideoTitle(candidate)) return candidate;
+            if (!fallback && candidate) fallback = candidate;
+        }
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return fallback;
+}
+
+/**
+ * Extracts the title and link of the current single video on a YouTube watch,
+ * Shorts, live, or embed page. Sends the data as a single video object to the
+ * popup, with the link normalized to the canonical watch?v=<id> form.
+ */
+async function extractSingleVideoDataAndSend() {
+    console.log("Content script: Starting single video extraction...");
+    // Canonical watch link: works for watch, Shorts, live and embed pages, and
+    // strips &list=/&index= playlist context from plain watch URLs.
+    const link = canonicalWatchUrl(window.location.href);
+
+    const title = await waitForVideoTitle();
+
+    if (title && link) {
         console.log(`Content script: Extracted single video: "${title}". Sending to popup.`);
-        chrome.runtime.sendMessage({ type: "SINGLE_VIDEO_DATA", video: { title, link } }, handleResponse);
+        sendOrStore({ type: "SINGLE_VIDEO_DATA", video: { title, link } });
     } else {
         console.warn("Content script: Could not extract title for single video. All title selectors failed.");
-        chrome.runtime.sendMessage({
+        sendOrStore({
             type: "EXTRACTION_ERROR",
-            error: "Failed to extract title for the current video. Selectors might be outdated."
-        }, handleResponse);
+            error: "Failed to extract title for the current video. Wait for the page to finish loading and try again."
+        });
     }
+}
+
+/**
+ * Sends an extraction result to the popup. Extraction can take a while
+ * (playlist auto-scroll up to ~40s, title polling up to 8s) and any click
+ * outside dismisses the popup — in that case sendMessage has no receiver and
+ * the result would be lost. Instead of dropping it, persist the payload to
+ * chrome.storage.local; the popup merges it the next time it opens.
+ */
+function sendOrStore(message) {
+    chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+            console.warn("Content script: popup not open; saving extraction result for the next popup open.");
+            try {
+                chrome.storage.local.set({ pendingExtraction: message });
+            } catch (e) {
+                console.error("Content script: failed to persist pending extraction:", e);
+            }
+        } else {
+            handleResponse(response);
+        }
+    });
 }
 
 /**
